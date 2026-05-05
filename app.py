@@ -226,19 +226,19 @@ def main():
 
     # Lazy imports of page modules to keep app.py clean
     if page == "timesheet":
-        from pages_app import timesheet_page
+        import timesheet_page
         timesheet_page.show()
     elif page == "team":
-        from pages_app import team_view
+        import team_view
         team_view.show()
     elif page == "reports":
-        from pages_app import reports_page
+        import reports_page
         reports_page.show()
     elif page == "admin":
-        from pages_app import admin_page
+        import admin_page
         admin_page.show()
     elif page == "upload":
-        from pages_app import upload_page
+        import upload_page
         upload_page.show()
 
 
