@@ -36,9 +36,18 @@ def show():
             st.session_state.week_offset = 0
             st.rerun()
 
-    # ── Load this week's existing entries ──
+    # ── Load this week's data once (cached) ──
     week_dates = get_week_dates(st.session_state.week_offset)
     all_entries = db.get_entries_for_user(user["id"])
+    projects = db.get_projects()
+    custom_acts = db.get_custom_acts()
+
+    # Pre-compute submission status for visible months
+    visible_months = set(d[:7] for d in week_dates)
+    submission_status = {
+        ym: (db.is_month_submitted(user["id"], ym), db.is_month_unlocked(user["id"], ym))
+        for ym in visible_months
+    }
 
     # Calculate week total
     week_total = sum(
@@ -67,15 +76,15 @@ def show():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Daily entries ──
+    # ── Daily entries (using pre-loaded data) ──
     for d in week_dates:
-        show_day_card(user, d, all_entries)
+        show_day_card(user, d, all_entries, projects, custom_acts, submission_status)
 
     # ── Submit month banner ──
-    show_submit_banner(user, week_dates)
+    show_submit_banner(user, week_dates, all_entries)
 
 
-def show_day_card(user, d, all_entries):
+def show_day_card(user, d, all_entries, projects, custom_acts, submission_status):
     """Show a single day's entry card."""
     day_name = get_day_name(d)
     day_short = format_date_short(d)
@@ -83,7 +92,8 @@ def show_day_card(user, d, all_entries):
     day_total = sum(e["hrs"] for e in day_entries)
 
     ym = d[:7]
-    is_locked = db.is_month_submitted(user["id"], ym) and not db.is_month_unlocked(user["id"], ym)
+    is_submitted, is_unlocked = submission_status.get(ym, (False, False))
+    is_locked = is_submitted and not is_unlocked
 
     with st.container():
         # Weekend
@@ -119,17 +129,19 @@ def show_day_card(user, d, all_entries):
             card_class = "day-card day-card-saved"
 
         with st.expander(f"{day_name} · {day_short}  —  {day_total:.1f} hrs", expanded=(day_total == 0)):
-            show_day_entries_form(user, d, day_entries, all_entries)
+            show_day_entries_form(user, d, day_entries, all_entries, projects, custom_acts)
 
 
-def show_day_entries_form(user, d, day_entries, all_entries):
+def show_day_entries_form(user, d, day_entries, all_entries, projects=None, custom_acts=None):
     """Show editable form for a day's entries."""
-    projects = db.get_projects()
+    if projects is None:
+        projects = db.get_projects()
+    if custom_acts is None:
+        custom_acts = db.get_custom_acts()
     project_options = [p["name"] for p in projects if p.get("status") == "Active"]
     if not project_options:
         project_options = [p["name"] for p in projects]
 
-    custom_acts = db.get_custom_acts()
     activities = get_activities_for_discipline(user.get("discipline"), custom_acts)
     activity_options = [f"{code} — {desc}" for code, desc in activities]
     activity_codes = [code for code, desc in activities]
@@ -282,13 +294,14 @@ def get_last_saved_entry(uid, all_entries):
     return work_entries[0]
 
 
-def show_submit_banner(user, week_dates):
+def show_submit_banner(user, week_dates, all_entries=None):
     """Show monthly submit/lock banner."""
     ym = week_dates[3][:7]
     month_label = get_month_label(ym)
 
-    # Get user entries for this month
-    all_entries = db.get_entries_for_user(user["id"])
+    # Use pre-loaded entries if available
+    if all_entries is None:
+        all_entries = db.get_entries_for_user(user["id"])
     month_entries = [e for e in all_entries if e["entry_date"].startswith(ym)]
 
     if not month_entries:
@@ -336,3 +349,4 @@ def show_edit_request_modal(user, ym):
                 db.request_edit(user["id"], ym, reason.strip())
                 st.success("✅ Edit request sent to admin!")
                 st.rerun()
+
