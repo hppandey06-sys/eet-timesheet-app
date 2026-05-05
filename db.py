@@ -162,14 +162,24 @@ def delete_project(project_id):
 # ENTRIES — the critical part, must work reliably
 # ════════════════════════════════════════════════════
 def get_entries_for_user(uid):
-    """Get all entries for a single user."""
+    """Get all entries for a single user. Cached for 30 seconds."""
+    return _get_entries_for_user_cached(uid)
+
+
+@st.cache_data(ttl=30)
+def _get_entries_for_user_cached(uid):
     sb = get_client()
     result = sb.table("ts_entries").select("*").eq("uid", uid).order("entry_date", desc=True).execute()
     return result.data or []
 
 
 def get_all_entries():
-    """Get all entries (for admin reports)."""
+    """Get all entries (for admin reports). Cached for 60 seconds."""
+    return _get_all_entries_cached()
+
+
+@st.cache_data(ttl=60)
+def _get_all_entries_cached():
     sb = get_client()
     result = sb.table("ts_entries").select("*").order("entry_date", desc=True).execute()
     return result.data or []
@@ -223,6 +233,8 @@ def save_day_entries(uid: int, entry_date: str, entries: list):
             })
         sb.table("ts_entries").insert(rows).execute()
 
+    # Clear cache so next read shows fresh data
+    st.cache_data.clear()
     return True
 
 
@@ -242,22 +254,31 @@ def update_entry(entry_id, **fields):
 # SUBMISSIONS — monthly lock
 # ════════════════════════════════════════════════════
 def get_submissions():
+    return _get_submissions_cached()
+
+
+@st.cache_data(ttl=30)
+def _get_submissions_cached():
     sb = get_client()
     result = sb.table("ts_submissions").select("*").execute()
     return result.data or []
 
 
 def is_month_submitted(uid, ym):
-    """Check if user has submitted for given month (YYYY-MM)."""
+    """Check if user has submitted for given month (YYYY-MM). Cached."""
+    return _is_month_submitted_cached(uid, ym)
+
+
+@st.cache_data(ttl=30)
+def _is_month_submitted_cached(uid, ym):
     sb = get_client()
-    result = sb.table("ts_submissions").select("*").eq("uid", uid).eq("ym", ym).eq("status", "submitted").execute()
+    result = sb.table("ts_submissions").select("id").eq("uid", uid).eq("ym", ym).eq("status", "submitted").execute()
     return bool(result.data)
 
 
 def submit_month(uid, ym):
     """Submit and lock a month for a user."""
     sb = get_client()
-    # Upsert (replace any existing record)
     sb.table("ts_submissions").delete().eq("uid", uid).eq("ym", ym).execute()
     sb.table("ts_submissions").insert({
         "id": int(datetime.now().timestamp() * 1000),
@@ -266,6 +287,7 @@ def submit_month(uid, ym):
         "status": "submitted",
         "submitted_at": datetime.utcnow().isoformat()
     }).execute()
+    st.cache_data.clear()
 
 
 # ════════════════════════════════════════════════════
@@ -303,9 +325,14 @@ def handle_edit_request(req_id, decision, admin_note=""):
 
 
 def is_month_unlocked(uid, ym):
-    """Check if user has approved edit request for this month."""
+    """Check if user has approved edit request for this month. Cached."""
+    return _is_month_unlocked_cached(uid, ym)
+
+
+@st.cache_data(ttl=30)
+def _is_month_unlocked_cached(uid, ym):
     sb = get_client()
-    result = sb.table("ts_edit_requests").select("*").eq("uid", uid).eq("ym", ym).eq("status", "approved").execute()
+    result = sb.table("ts_edit_requests").select("id").eq("uid", uid).eq("ym", ym).eq("status", "approved").execute()
     return bool(result.data)
 
 
