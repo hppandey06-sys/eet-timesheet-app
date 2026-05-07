@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import date, timedelta
 from io import BytesIO
 import db
-from constants import DEPT_DISCIPLINES, get_month_label
+from constants import DEPT_DISCIPLINES, get_month_label, COMPANIES
 
 
 def show():
@@ -31,20 +31,26 @@ def show():
         st.write("")
         run = st.button("Run Report", type="primary", use_container_width=True)
 
-    col4, col5, col6 = st.columns(3)
+    col4, col5, col6, col7 = st.columns(4)
     members = db.get_members()
     projects = db.get_projects()
 
     with col4:
-        depts = ["All"] + sorted(set(m["dept"] for m in members if m.get("dept")))
-        dept_filter = st.selectbox("Department", depts, key="rep_dept")
+        companies = ["All"] + COMPANIES
+        company_filter = st.selectbox("Company", companies, key="rep_company")
     with col5:
+        filtered_for_dept = members
+        if company_filter != "All":
+            filtered_for_dept = [m for m in members if m.get("company") == company_filter]
+        depts = ["All"] + sorted(set(m["dept"] for m in filtered_for_dept if m.get("dept")))
+        dept_filter = st.selectbox("Department", depts, key="rep_dept")
+    with col6:
         if dept_filter == "All":
-            disciplines = ["All"] + sorted(set(m["discipline"] for m in members if m.get("discipline")))
+            disciplines = ["All"] + sorted(set(m["discipline"] for m in filtered_for_dept if m.get("discipline")))
         else:
             disciplines = ["All"] + sorted(DEPT_DISCIPLINES.get(dept_filter, []))
         disc_filter = st.selectbox("Discipline", disciplines, key="rep_disc")
-    with col6:
+    with col7:
         proj_options = ["All"] + sorted([p["name"] for p in projects])
         proj_filter = st.selectbox("Project", proj_options, key="rep_proj")
 
@@ -66,6 +72,8 @@ def show():
                 continue
             m = members_dict.get(e["uid"])
             if not m:
+                continue
+            if company_filter != "All" and m.get("company") != company_filter:
                 continue
             if dept_filter != "All" and m.get("dept") != dept_filter:
                 continue
@@ -100,6 +108,7 @@ def show():
     # Build dataframe
     df = pd.DataFrame([{
         "Name": e["_member"]["name"],
+        "Company": e["_member"].get("company", "—"),
         "Department": e["_member"].get("dept", "—"),
         "Discipline": e["_member"].get("discipline", "—"),
         "Project": e["proj"],
