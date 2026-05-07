@@ -34,19 +34,22 @@ def show_bulk_members():
     st.markdown("""
     Upload a CSV or Excel file to add multiple members at once.
 
-    **Required columns:** `Name`, `Email`, `Department`, `Discipline`, `Role`
+    **Required columns:** `Name`, `Email`, `Company`, `Department`, `Discipline`, `Role`
     **Optional:** `Password` (defaults to 1234)
 
-    **Valid Departments:** Engineering, Project, Procurement
+    **Valid Companies:** GCC, EETH, EETF, EET, STL
+    **Valid Departments:** Engineering, Project, Procurement, Legal, Business Development, Environmental, Safety, Admin, Finance, Communications, Stanlow Terminal
     """)
 
     # Download template
     template_df = pd.DataFrame([
-        {"Name": "John Smith", "Email": "john@eetfuels.com",
+        {"Name": "John Smith", "Email": "john.smith@eetfuels.com",
+         "Company": "GCC",
          "Department": "Engineering", "Discipline": "Process",
          "Role": "member", "Password": "1234"},
-        {"Name": "Jane Doe", "Email": "jane@eetfuels.com",
-         "Department": "Project", "Discipline": "Document Control",
+        {"Name": "Jane Doe", "Email": "jane.doe@eetfuels.com",
+         "Company": "EETH",
+         "Department": "Project", "Discipline": "Project Management",
          "Role": "member", "Password": "1234"},
     ])
 
@@ -95,6 +98,7 @@ def show_bulk_members():
                     m = {
                         "name": str(row.get("Name", "")).strip(),
                         "email": str(row.get("Email", "")).strip(),
+                        "company": str(row.get("Company", "GCC")).strip(),
                         "dept": str(row.get("Department", "Engineering")).strip(),
                         "discipline": str(row.get("Discipline", "")).strip(),
                         "role": str(row.get("Role", "member")).strip().lower(),
