@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
 import db
-from constants import format_date_short, get_week_dates, DEPT_DISCIPLINES
+from constants import format_date_short, get_week_dates, DEPT_DISCIPLINES, COMPANIES
 
 
 def show():
@@ -15,7 +15,7 @@ def show():
 
     st.markdown("### 👥 Team View")
 
-    # Filters
+    # Filters - row 1
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -43,28 +43,35 @@ def show():
             to_date = first - timedelta(days=1)
             from_date = date(to_date.year, to_date.month, 1)
 
+    members = db.get_members()
+
+    # Company filter (new)
     with col2 if period != "Custom" else col4:
-        members = db.get_members()
-        depts = ["All"] + sorted(set(m["dept"] for m in members if m.get("dept")))
+        companies = ["All"] + COMPANIES
+        company_filter = st.selectbox("Company", companies)
+
+    # Filters - row 2
+    cols2 = st.columns(3)
+    with cols2[0]:
+        # Filter members by company first
+        filtered_for_dept = members
+        if company_filter != "All":
+            filtered_for_dept = [m for m in members if m.get("company") == company_filter]
+        depts = ["All"] + sorted(set(m["dept"] for m in filtered_for_dept if m.get("dept")))
         dept_filter = st.selectbox("Department", depts)
 
-    if period == "Custom":
-        cols2 = st.columns(2)
-        col_disc, col_member = cols2[0], cols2[1]
-    else:
-        col_disc = col3
-        col_member = col4
-
-    with col_disc:
+    with cols2[1]:
         if dept_filter == "All":
-            disciplines = ["All"] + sorted(set(m["discipline"] for m in members if m.get("discipline")))
+            disciplines = ["All"] + sorted(set(m["discipline"] for m in filtered_for_dept if m.get("discipline")))
         else:
             disciplines = ["All"] + sorted(DEPT_DISCIPLINES.get(dept_filter, []))
         disc_filter = st.selectbox("Discipline", disciplines)
 
-    with col_member:
+    with cols2[2]:
         member_options = ["All Members"]
         filtered_members = members
+        if company_filter != "All":
+            filtered_members = [m for m in filtered_members if m.get("company") == company_filter]
         if dept_filter != "All":
             filtered_members = [m for m in filtered_members if m.get("dept") == dept_filter]
         if disc_filter != "All":
@@ -90,6 +97,8 @@ def show():
             continue
         m = members_dict.get(e["uid"])
         if not m:
+            continue
+        if company_filter != "All" and m.get("company") != company_filter:
             continue
         if dept_filter != "All" and m.get("dept") != dept_filter:
             continue
@@ -130,6 +139,7 @@ def show():
         m = e["_member"]
         df_data.append({
             "Name": m["name"],
+            "Company": m.get("company", "—"),
             "Department": m.get("dept", "—"),
             "Discipline": m.get("discipline", "—"),
             "Project": e["proj"],
