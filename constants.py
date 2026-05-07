@@ -20,6 +20,9 @@ HOLIDAYS_2026 = {
     "2026-12-25": "Christmas",
 }
 
+# Companies in the EET group
+COMPANIES = ["GCC", "EETH", "EETF", "EET", "STL"]
+
 # Departments and their disciplines
 DEPT_DISCIPLINES = {
     "Engineering": [
@@ -29,7 +32,15 @@ DEPT_DISCIPLINES = {
         "Civil & Structural", "Assurance", "ESG"
     ],
     "Project": ["Project Management", "Project control", "Document Control"],
-    "Procurement": ["Procurement", "Expediting", "Logistics"]
+    "Procurement": ["Procurement", "Expediting", "Logistics"],
+    "Legal": ["Legal"],
+    "Business Development": ["Business Development"],
+    "Environmental": ["Environmental"],
+    "Safety": ["Safety"],
+    "Admin": ["Admin"],
+    "Finance": ["Finance Operations", "Finance"],
+    "Communications": ["Communications"],
+    "Stanlow Terminal": ["Stanlow Operations"],
 }
 
 # Built-in activity codes per discipline
