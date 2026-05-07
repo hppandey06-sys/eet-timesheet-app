@@ -8,7 +8,7 @@ from datetime import date, timedelta
 import db
 from constants import (
     DEPT_DISCIPLINES, DISCIPLINE_ACTIVITIES, get_month_label,
-    todayIST, HOLIDAYS_2026
+    todayIST, HOLIDAYS_2026, COMPANIES
 )
 
 
@@ -51,6 +51,7 @@ def show_members_tab():
             with col1:
                 name = st.text_input("Full Name")
                 email = st.text_input("Email", placeholder="user@eetfuels.com")
+                company = st.selectbox("Company", COMPANIES, index=0)
             with col2:
                 dept = st.selectbox("Department", list(DEPT_DISCIPLINES.keys()))
                 discipline = st.selectbox("Discipline", DEPT_DISCIPLINES[dept])
@@ -66,7 +67,7 @@ def show_members_tab():
                     st.error("Name and email are required")
                 else:
                     try:
-                        new_id = db.add_member(name, email, dept, discipline, role, password)
+                        new_id = db.add_member(name, email, dept, discipline, role, password, company)
                         st.success(f"✅ {name} added (ID: {new_id})")
                         st.rerun()
                     except Exception as e:
@@ -79,8 +80,13 @@ def show_members_tab():
         return
 
     df = pd.DataFrame(members)
-    df = df[["id", "name", "email", "dept", "discipline", "role"]].copy()
-    df.columns = ["ID", "Name", "Email", "Department", "Discipline", "Role"]
+    cols_to_show = ["id", "name", "email", "company", "dept", "discipline", "role"]
+    cols_present = [c for c in cols_to_show if c in df.columns]
+    df = df[cols_present].copy()
+    rename_map = {"id": "ID", "name": "Name", "email": "Email",
+                  "company": "Company", "dept": "Department",
+                  "discipline": "Discipline", "role": "Role"}
+    df.columns = [rename_map.get(c, c) for c in df.columns]
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     # Edit/delete
@@ -99,6 +105,11 @@ def show_members_tab():
                 with col1:
                     new_name = st.text_input("Name", value=member["name"])
                     new_email = st.text_input("Email", value=member["email"])
+                    cur_company = member.get("company", "GCC")
+                    if cur_company not in COMPANIES:
+                        cur_company = "GCC"
+                    new_company = st.selectbox("Company", COMPANIES,
+                                               index=COMPANIES.index(cur_company))
                 with col2:
                     cur_dept = member.get("dept", "Engineering")
                     if cur_dept not in DEPT_DISCIPLINES:
@@ -125,7 +136,8 @@ def show_members_tab():
                     delete = st.form_submit_button("🗑 Delete Member", use_container_width=True)
 
                 if save:
-                    fields = {"name": new_name, "email": new_email, "dept": new_dept,
+                    fields = {"name": new_name, "email": new_email,
+                              "company": new_company, "dept": new_dept,
                               "discipline": new_disc, "role": new_role}
                     if new_pw.strip():
                         fields["password"] = new_pw.strip()
