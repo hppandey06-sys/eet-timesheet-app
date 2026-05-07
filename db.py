@@ -58,7 +58,7 @@ def get_members():
     return result.data or []
 
 
-def add_member(name, email, dept, discipline, role="member", password="1234"):
+def add_member(name, email, dept, discipline, role="member", password="1234", company="GCC"):
     sb = get_client()
     members = get_members()
     new_id = max([m["id"] for m in members], default=0) + 1
@@ -69,7 +69,8 @@ def add_member(name, email, dept, discipline, role="member", password="1234"):
         "dept": dept,
         "discipline": discipline,
         "role": role,
-        "password": password
+        "password": password,
+        "company": company
     }).execute()
     st.cache_data.clear()
     return new_id
@@ -111,7 +112,8 @@ def bulk_add_members(members_data):
             "dept": m.get("dept", "Engineering"),
             "discipline": m.get("discipline", ""),
             "role": m.get("role", "member"),
-            "password": m.get("password", "1234")
+            "password": m.get("password", "1234"),
+            "company": m.get("company", "GCC")
         })
         new_id += 1
 
