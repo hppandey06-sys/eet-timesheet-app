@@ -120,7 +120,9 @@ def show():
     df = df.sort_values("Date", ascending=False)
 
     # Tabs for different views
-    tab1, tab2, tab3 = st.tabs(["📋 Detailed Entries", "📊 Summary by Member", "📊 Summary by Project"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Detailed Entries", "📊 By Member", "📊 By Project", "📊 By Discipline"
+    ])
 
     with tab1:
         st.dataframe(df, use_container_width=True, height=400)
@@ -152,3 +154,9 @@ def show():
         summary_proj = summary_proj.sort_values("Hours", ascending=False)
         st.dataframe(summary_proj, use_container_width=True, height=400)
         st.bar_chart(summary_proj.set_index("Project")["Hours"])
+
+    with tab4:
+        summary_disc = df.groupby(["Discipline", "Department"])["Hours"].sum().reset_index()
+        summary_disc = summary_disc.sort_values("Hours", ascending=False)
+        st.dataframe(summary_disc, use_container_width=True, height=400)
+        st.bar_chart(summary_disc.set_index("Discipline")["Hours"])
