@@ -18,12 +18,14 @@ def export_member_timesheet(member, project_name, project_acts, entries,
 
     Args:
         member: dict with 'name', 'company', 'discipline'
-        project_name: e.g., 'DC Power'
+        project_name: e.g., 'DC Power' or 'ALL PROJECTS' for combined view
         project_acts: list of dicts with 'code', 'description'
-        entries: list of entries for this member + project + date range
+        entries: list of entries for this member + date range
         from_date, to_date: date range
         company: org name (optional, defaults to member's company)
     """
+    is_all_projects = (project_name == 'ALL PROJECTS')
+
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -51,13 +53,19 @@ def export_member_timesheet(member, project_name, project_acts, entries,
     weekend_fill = PatternFill("solid", fgColor="F2F2F2")
     total_fill = PatternFill("solid", fgColor="FFE699")
     total_font = Font(bold=True, size=11)
+    project_section_fill = PatternFill("solid", fgColor="D9E1F2")
 
     for ym, dates in months.items():
         month_label = dates[0].strftime("%b %y")
         ws = wb.create_sheet(month_label)
 
+        # Filter entries to this month
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+        month_entries = [e for e in entries if e.get("entry_date") in date_strs]
+
         # Title
-        ws["A1"] = f"Timesheet for {project_name}"
+        title = f"Timesheet for {project_name}" if not is_all_projects else "Timesheet — All Projects"
+        ws["A1"] = title
         ws["A1"].font = title_font
         ws.merge_cells(f"A1:{get_column_letter(len(dates) + 1)}1")
 
@@ -81,9 +89,8 @@ def export_member_timesheet(member, project_name, project_acts, entries,
 
         # Date row
         ws["A7"] = "Date:"
-        ws["A7"].font = Font(bold=True)
-        ws["A7"].fill = header_fill
         ws["A7"].font = header_font
+        ws["A7"].fill = header_fill
         ws["A7"].border = border
         ws["A7"].alignment = Alignment(horizontal="center", vertical="center")
 
@@ -110,73 +117,55 @@ def export_member_timesheet(member, project_name, project_acts, entries,
             if d.weekday() >= 5:
                 cell.fill = weekend_fill
 
-        # Workstream/Activity heading
-        ws["A9"] = "Activity Codes"
-        ws["A9"].font = Font(bold=True, color="1F4E79")
-        ws["A9"].fill = PatternFill("solid", fgColor="D9E1F2")
+        ws.column_dimensions["A"].width = 32
 
-        # Activity rows
-        row_num = 10
-        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+        if is_all_projects:
+            row_num = render_all_projects(
+                ws, month_entries, dates, project_section_fill, border, weekend_fill, total_fill, total_font
+            )
+        else:
+            # Single project - filter to that project
+            proj_entries = [e for e in month_entries if e.get("proj") == project_name]
+            row_num = render_single_project(
+                ws, proj_entries, project_acts, dates, project_section_fill,
+                border, weekend_fill, total_fill, total_font, project_name, start_row=9
+            )
 
-        # Filter entries to this project & date range
-        proj_entries = [e for e in entries if e.get("proj") == project_name and e.get("entry_date") in date_strs]
-
-        if not project_acts:
-            # No project-specific codes — list activity codes used
-            used_acts = sorted(set((e.get("act"), "") for e in proj_entries))
-            project_acts = [{"code": code, "description": desc} for code, desc in used_acts] or [{"code": "OTHERS", "description": "Other"}]
-
-        for act_info in project_acts:
-            code = act_info["code"]
-            desc = act_info.get("description", "")
-            label = f"{code} - {desc}" if desc else code
-
-            cell = ws.cell(row=row_num, column=1)
-            cell.value = label
-            cell.font = Font(bold=True, size=10)
-            cell.border = border
-            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-            ws.column_dimensions["A"].width = 32
-
-            # Fill hours per day
-            for i, d in enumerate(dates):
-                ds = d.strftime("%Y-%m-%d")
-                hrs_for_day = sum(
-                    float(e.get("hrs", 0)) for e in proj_entries
-                    if e.get("entry_date") == ds and e.get("act") == code
-                )
-                cell = ws.cell(row=row_num, column=i + 2)
-                cell.value = hrs_for_day if hrs_for_day > 0 else None
-                cell.alignment = Alignment(horizontal="center")
-                cell.border = border
-                if d.weekday() >= 5:
-                    cell.fill = weekend_fill
-
-            row_num += 1
-
-        # Totals row
+        # Final grand total row
         total_row = row_num
-        ws.cell(row=total_row, column=1).value = "Totals Hour"
-        ws.cell(row=total_row, column=1).font = total_font
-        ws.cell(row=total_row, column=1).fill = total_fill
+        ws.cell(row=total_row, column=1).value = "GRAND TOTAL"
+        ws.cell(row=total_row, column=1).font = Font(bold=True, size=12, color="FFFFFF")
+        ws.cell(row=total_row, column=1).fill = PatternFill("solid", fgColor="1F4E79")
         ws.cell(row=total_row, column=1).border = border
+        ws.cell(row=total_row, column=1).alignment = Alignment(horizontal="center")
 
         for i, d in enumerate(dates):
-            col_letter = get_column_letter(i + 2)
+            ds = d.strftime("%Y-%m-%d")
+            day_total = sum(float(e.get("hrs", 0)) for e in month_entries if e.get("entry_date") == ds)
             cell = ws.cell(row=total_row, column=i + 2)
-            cell.value = f"=SUM({col_letter}10:{col_letter}{total_row - 1})"
-            cell.font = total_font
-            cell.fill = total_fill
+            cell.value = day_total if day_total > 0 else None
+            cell.font = Font(bold=True, size=11, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E79")
             cell.border = border
             cell.alignment = Alignment(horizontal="center")
 
-        # Grand total
-        total_label_col = get_column_letter(len(dates) + 2)
-        ws.cell(row=total_row, column=len(dates) + 2).value = f"=SUM(B{total_row}:{get_column_letter(len(dates) + 1)}{total_row})"
-        ws.cell(row=total_row, column=len(dates) + 2).font = Font(bold=True, size=11, color="1F4E79")
-        ws.cell(row=total_row, column=len(dates) + 2).fill = total_fill
-        ws.cell(row=total_row, column=len(dates) + 2).border = border
+        # Grand total of all hours
+        grand_total = sum(float(e.get("hrs", 0)) for e in month_entries)
+        gt_col = len(dates) + 2
+        cell = ws.cell(row=total_row, column=gt_col)
+        cell.value = grand_total if grand_total > 0 else None
+        cell.font = Font(bold=True, size=11, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E79")
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center")
+        ws.column_dimensions[get_column_letter(gt_col)].width = 10
+
+        # Total label header
+        ws.cell(row=7, column=gt_col).value = "Total"
+        ws.cell(row=7, column=gt_col).font = header_font
+        ws.cell(row=7, column=gt_col).fill = header_fill
+        ws.cell(row=7, column=gt_col).border = border
+        ws.cell(row=7, column=gt_col).alignment = Alignment(horizontal="center")
 
         # Freeze panes
         ws.freeze_panes = "B9"
@@ -186,3 +175,117 @@ def export_member_timesheet(member, project_name, project_acts, entries,
     wb.save(buffer)
     buffer.seek(0)
     return buffer
+
+
+def render_single_project(ws, proj_entries, project_acts, dates,
+                          section_fill, border, weekend_fill, total_fill, total_font,
+                          project_name=None, start_row=9):
+    """Render rows for a single project. Returns next available row."""
+    if project_name:
+        cell = ws.cell(row=start_row, column=1)
+        cell.value = project_name
+        cell.font = Font(bold=True, color="1F4E79", size=11)
+        cell.fill = section_fill
+        cell.border = border
+        ws.cell(row=start_row, column=1).alignment = Alignment(horizontal="left")
+        # Fill section row
+        for i in range(len(dates) + 1):
+            c = ws.cell(row=start_row, column=i + 2)
+            c.fill = section_fill
+            c.border = border
+        start_row += 1
+
+    if not project_acts:
+        # Use activity codes from actual entries
+        used_acts = sorted(set(e.get("act") for e in proj_entries))
+        project_acts = [{"code": code, "description": ""} for code in used_acts] or [{"code": "OTHERS", "description": "Other"}]
+
+    row_num = start_row
+    for act_info in project_acts:
+        code = act_info["code"]
+        desc = act_info.get("description", "")
+        label = f"{code} - {desc}" if desc else code
+
+        cell = ws.cell(row=row_num, column=1)
+        cell.value = label
+        cell.font = Font(size=10)
+        cell.border = border
+        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+        # Fill hours per day
+        row_total = 0
+        for i, d in enumerate(dates):
+            ds = d.strftime("%Y-%m-%d")
+            hrs_for_day = sum(
+                float(e.get("hrs", 0)) for e in proj_entries
+                if e.get("entry_date") == ds and e.get("act") == code
+            )
+            cell = ws.cell(row=row_num, column=i + 2)
+            cell.value = hrs_for_day if hrs_for_day > 0 else None
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = border
+            if d.weekday() >= 5:
+                cell.fill = weekend_fill
+            row_total += hrs_for_day
+
+        # Row total at end
+        cell = ws.cell(row=row_num, column=len(dates) + 2)
+        cell.value = row_total if row_total > 0 else None
+        cell.font = Font(bold=True, size=10)
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = border
+
+        row_num += 1
+
+    # Subtotal row for this project
+    subtotal_row = row_num
+    ws.cell(row=subtotal_row, column=1).value = "Subtotal"
+    ws.cell(row=subtotal_row, column=1).font = total_font
+    ws.cell(row=subtotal_row, column=1).fill = total_fill
+    ws.cell(row=subtotal_row, column=1).border = border
+
+    for i, d in enumerate(dates):
+        col_letter = get_column_letter(i + 2)
+        cell = ws.cell(row=subtotal_row, column=i + 2)
+        cell.value = f"=SUM({col_letter}{start_row}:{col_letter}{subtotal_row - 1})"
+        cell.font = total_font
+        cell.fill = total_fill
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center")
+
+    # Subtotal end column
+    cell = ws.cell(row=subtotal_row, column=len(dates) + 2)
+    cell.value = f"=SUM(B{subtotal_row}:{get_column_letter(len(dates) + 1)}{subtotal_row})"
+    cell.font = total_font
+    cell.fill = total_fill
+    cell.border = border
+    cell.alignment = Alignment(horizontal="center")
+
+    return subtotal_row + 2  # leave gap before next project
+
+
+def render_all_projects(ws, entries, dates, section_fill, border, weekend_fill, total_fill, total_font):
+    """Render rows grouped by project."""
+    # Get unique projects from entries
+    projects_used = sorted(set(e.get("proj") for e in entries if e.get("proj")))
+
+    if not projects_used:
+        ws.cell(row=9, column=1).value = "(No entries in this month)"
+        ws.cell(row=9, column=1).font = Font(italic=True, color="808080")
+        return 11
+
+    row_num = 9
+    for proj_name in projects_used:
+        # Get unique activities used for this project
+        proj_entries = [e for e in entries if e.get("proj") == proj_name]
+        used_acts = sorted(set(e.get("act") for e in proj_entries))
+        project_acts = [{"code": code, "description": ""} for code in used_acts]
+
+        # Render this project
+        row_num = render_single_project(
+            ws, proj_entries, project_acts, dates, section_fill,
+            border, weekend_fill, total_fill, total_font,
+            project_name=proj_name, start_row=row_num
+        )
+
+    return row_num
