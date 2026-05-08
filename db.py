@@ -194,6 +194,49 @@ def get_entries_for_date(uid, entry_date):
     return result.data or []
 
 
+def save_single_entry(uid, entry_date, proj, act, hrs, desc=""):
+    """
+    Save ONE entry row. Used by per-row save in v3.
+    Uses upsert by (uid, entry_date, proj, act) — safe, no race conditions.
+    """
+    sb = get_client()
+    from datetime import datetime
+    entry_id = int(datetime.now().timestamp() * 1000) * 100 + (uid % 100)
+
+    # Upsert by unique key (uid, entry_date, proj, act)
+    existing = sb.table("ts_entries").select("id").eq("uid", uid).eq("entry_date", entry_date).eq("proj", proj).eq("act", act).execute()
+
+    row_data = {
+        "uid": uid,
+        "proj": proj,
+        "act": act,
+        "hrs": float(hrs),
+        "entry_date": entry_date,
+        "description": desc or "",
+        "is_holiday": False,
+        "is_leave": False
+    }
+
+    if existing.data:
+        # Update existing row
+        sb.table("ts_entries").update(row_data).eq("id", existing.data[0]["id"]).execute()
+    else:
+        # Insert new
+        row_data["id"] = entry_id
+        sb.table("ts_entries").insert(row_data).execute()
+
+    st.cache_data.clear()
+    return True
+
+
+def delete_single_entry(uid, entry_date, proj, act):
+    """Delete one specific entry by (uid, date, proj, act)."""
+    sb = get_client()
+    sb.table("ts_entries").delete().eq("uid", uid).eq("entry_date", entry_date).eq("proj", proj).eq("act", act).execute()
+    st.cache_data.clear()
+    return True
+
+
 def save_day_entries(uid: int, entry_date: str, entries: list):
     """
     Save all entries for a single day. Replaces existing entries for that date.
@@ -289,6 +332,54 @@ def submit_month(uid, ym):
         "status": "submitted",
         "submitted_at": datetime.utcnow().isoformat()
     }).execute()
+    st.cache_data.clear()
+
+
+def unlock_month(uid, ym):
+    """v3: Member self-unlock — just removes submission record."""
+    sb = get_client()
+    sb.table("ts_submissions").delete().eq("uid", uid).eq("ym", ym).execute()
+    st.cache_data.clear()
+
+
+# ════════════════════════════════════════════════════
+# PROJECT-SPECIFIC ACTIVITY CODES
+# ════════════════════════════════════════════════════
+@st.cache_data(ttl=60)
+def get_project_acts(project_name):
+    """Get activity codes specific to a project (e.g., DC Power workstreams)."""
+    sb = get_client()
+    try:
+        result = sb.table("ts_project_acts").select("*").eq("project", project_name).order("display_order").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def get_all_project_acts():
+    sb = get_client()
+    try:
+        result = sb.table("ts_project_acts").select("*").order("project").execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def add_project_act(project, code, description, display_order=0):
+    sb = get_client()
+    sb.table("ts_project_acts").insert({
+        "id": int(datetime.now().timestamp() * 1000),
+        "project": project,
+        "code": code.upper(),
+        "description": description,
+        "display_order": display_order
+    }).execute()
+    st.cache_data.clear()
+
+
+def delete_project_act(act_id):
+    sb = get_client()
+    sb.table("ts_project_acts").delete().eq("id", act_id).execute()
     st.cache_data.clear()
 
 
