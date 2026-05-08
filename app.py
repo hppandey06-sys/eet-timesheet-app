@@ -123,7 +123,7 @@ if "week_offset" not in st.session_state:
 if "draft_entries" not in st.session_state:
     st.session_state.draft_entries = {}
 if "page" not in st.session_state:
-    st.session_state.page = "timesheet"
+    st.session_state.page = "home"
 
 
 # ════════════════════════════════════════════════════
@@ -192,15 +192,16 @@ def show_topbar():
     """, unsafe_allow_html=True)
 
     # Navigation tabs
-    tabs = ["📋 My Timesheet", "👥 Team View", "📊 Reports"]
+    tabs = ["🏠 Home", "📋 My Timesheet", "👥 Team View", "📊 Reports"]
+    page_ids = ["home", "timesheet", "team", "reports"]
     if is_admin:
         tabs.extend(["⚙️ Admin", "📤 Upload Data"])
+        page_ids.extend(["admin", "upload"])
 
     cols = st.columns(len(tabs) + 1)
     for i, tab_label in enumerate(tabs):
         with cols[i]:
-            page_id = ["timesheet", "team", "reports", "admin", "upload"][i] if is_admin else \
-                      ["timesheet", "team", "reports"][i]
+            page_id = page_ids[i]
             if st.button(tab_label, key=f"nav_{page_id}", use_container_width=True,
                          type="primary" if st.session_state.page == page_id else "secondary"):
                 st.session_state.page = page_id
@@ -225,7 +226,10 @@ def main():
     page = st.session_state.page
 
     # Lazy imports of page modules to keep app.py clean
-    if page == "timesheet":
+    if page == "home":
+        import home_page
+        home_page.show()
+    elif page == "timesheet":
         import timesheet_page
         timesheet_page.show()
     elif page == "team":
