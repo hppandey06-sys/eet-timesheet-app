@@ -5,7 +5,9 @@ Admin page — manage members, projects, edit requests, reminders.
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
+from io import BytesIO
 import db
+import excel_export
 from constants import (
     DEPT_DISCIPLINES, DISCIPLINE_ACTIVITIES, get_month_label,
     todayIST, HOLIDAYS_2026, COMPANIES
@@ -20,9 +22,9 @@ def show():
 
     st.markdown("### ⚙️ Admin Panel")
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "👥 Members", "📁 Projects", "🏷️ Activity Codes",
-        "✏️ Edit Requests", "📧 Reminders", "🗂 Entries"
+        "📧 Reminders", "🗂 Entries"
     ])
 
     with tab1:
@@ -32,10 +34,8 @@ def show():
     with tab3:
         show_activity_codes_tab()
     with tab4:
-        show_edit_requests_tab()
-    with tab5:
         show_reminders_tab()
-    with tab6:
+    with tab5:
         show_entries_tab()
 
 
@@ -88,6 +88,11 @@ def show_members_tab():
                   "discipline": "Discipline", "role": "Role"}
     df.columns = [rename_map.get(c, c) for c in df.columns]
     st.dataframe(df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown("##### 📥 Export Member Timesheet")
+    show_export_section(members)
+    st.markdown("---")
 
     # Edit/delete
     st.markdown("##### Edit or delete a member")
@@ -228,15 +233,25 @@ def show_projects_tab():
 # ACTIVITY CODES
 # ════════════════════════════════════════════════════
 def show_activity_codes_tab():
-    st.markdown("#### Activity Codes by Discipline")
+    st.markdown("#### 🏷️ Activity Codes")
+
+    sub_tab1, sub_tab2 = st.tabs(["By Discipline", "By Project (workstreams)"])
+
+    with sub_tab1:
+        show_discipline_codes()
+    with sub_tab2:
+        show_project_codes()
+
+
+def show_discipline_codes():
+    """Discipline-based activity codes."""
+    st.markdown("##### Discipline Activity Codes")
 
     all_disciplines = sorted(set(
         d for discs in DEPT_DISCIPLINES.values() for d in discs
     ))
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        sel_disc = st.selectbox("Filter by discipline", ["All"] + all_disciplines)
+    sel_disc = st.selectbox("Filter by discipline", ["All"] + all_disciplines, key="disc_filter")
 
     with st.expander("➕ Add custom activity code", expanded=False):
         with st.form("add_act"):
@@ -255,9 +270,8 @@ def show_activity_codes_tab():
                         st.success(f"✅ {code} added")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Failed (table may not exist yet): {e}")
+                        st.error(f"Failed: {e}")
 
-    # Display codes
     rows = []
     if sel_disc == "All":
         for disc in all_disciplines:
@@ -284,40 +298,130 @@ def show_activity_codes_tab():
         st.info("No activity codes for this discipline")
 
 
-# ════════════════════════════════════════════════════
-# EDIT REQUESTS
-# ════════════════════════════════════════════════════
-def show_edit_requests_tab():
-    st.markdown("#### ✏️ Edit Requests")
+def show_project_codes():
+    """Project-specific activity codes (e.g., DC Power workstreams)."""
+    st.markdown("##### Project-Specific Activity Codes (Workstreams)")
+    st.caption("Add codes that apply only to a specific project — like WS1, WS2 for DC Power.")
 
-    pending = db.get_edit_requests("pending")
-    if not pending:
-        st.success("✅ No pending edit requests")
-        return
+    projects = db.get_projects()
 
-    members = {m["id"]: m for m in db.get_members()}
+    col1 = st.columns(1)[0]
+    with col1:
+        proj_options = ["All"] + sorted([p["name"] for p in projects])
+        sel_proj = st.selectbox("Filter by project", proj_options, key="proj_acts_filter")
 
-    for req in pending:
-        m = members.get(req["uid"], {})
-        with st.expander(f"📋 {m.get('name', 'Unknown')} — {get_month_label(req['ym'])}", expanded=True):
-            st.markdown(f"**Member:** {m.get('name', 'Unknown')}")
-            st.markdown(f"**Month:** {get_month_label(req['ym'])}")
-            st.markdown(f"**Reason:** {req.get('reason', '—')}")
-            st.markdown(f"**Requested:** {req.get('requested_at', '—')[:10]}")
-
-            note = st.text_input("Admin note (optional)", key=f"note_{req['id']}")
-
+    with st.expander("➕ Add project activity code", expanded=False):
+        with st.form("add_proj_act"):
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("✅ Approve", key=f"approve_{req['id']}", type="primary"):
-                    db.handle_edit_request(req["id"], "approved", note)
-                    st.success("Approved")
-                    st.rerun()
+                proj_name = st.selectbox("Project", [p["name"] for p in projects], key="proj_act_proj")
+                code = st.text_input("Code", placeholder="e.g. WS1, WS2")
             with col2:
-                if st.button("❌ Reject", key=f"reject_{req['id']}"):
-                    db.handle_edit_request(req["id"], "rejected", note)
-                    st.success("Rejected")
-                    st.rerun()
+                desc = st.text_input("Description", placeholder="e.g. Commercialisation")
+                order = st.number_input("Display Order", min_value=0, max_value=100, value=0)
+
+            if st.form_submit_button("Add", type="primary"):
+                if proj_name and code and desc:
+                    try:
+                        db.add_project_act(proj_name, code, desc, order)
+                        st.success(f"✅ {code} added to {proj_name}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+
+    # Display
+    if sel_proj == "All":
+        all_proj_acts = db.get_all_project_acts()
+    else:
+        all_proj_acts = db.get_project_acts(sel_proj)
+
+    if all_proj_acts:
+        df = pd.DataFrame(all_proj_acts)
+        cols = ["project", "code", "description", "display_order"]
+        df = df[[c for c in cols if c in df.columns]]
+        df.columns = [c.title() for c in df.columns]
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown("##### Delete project activity code")
+        sel_to_del = st.selectbox(
+            "Select to delete",
+            ["—"] + [f"{a['project']} · {a['code']} (ID:{a['id']})" for a in all_proj_acts]
+        )
+        if sel_to_del != "—":
+            act_id = int(sel_to_del.split("ID:")[1].rstrip(")"))
+            if st.button("🗑 Delete this code", type="secondary"):
+                db.delete_project_act(act_id)
+                st.success("Deleted")
+                st.rerun()
+    else:
+        st.info("No project-specific codes yet.")
+
+
+# ════════════════════════════════════════════════════
+# EXPORT MEMBER TIMESHEET (replaces Edit Requests)
+# ════════════════════════════════════════════════════
+def show_export_section(members):
+    """Export per-member, per-project timesheet in DC Power format."""
+    projects = db.get_projects()
+
+    col1, col2, col3, col4 = st.columns([2, 2, 1.5, 1.5])
+
+    with col1:
+        member_options = sorted([m["name"] for m in members])
+        sel_member_name = st.selectbox("Member", member_options, key="export_member")
+        sel_member = next((m for m in members if m["name"] == sel_member_name), None)
+
+    with col2:
+        project_options = [p["name"] for p in projects]
+        sel_project = st.selectbox("Project", project_options, key="export_project")
+
+    # Default to last calendar month
+    today = date.today()
+    last_month_end = date(today.year, today.month, 1) - timedelta(days=1)
+    last_month_start = date(last_month_end.year, last_month_end.month, 1)
+
+    with col3:
+        from_date = st.date_input("From", value=last_month_start, key="export_from")
+    with col4:
+        to_date = st.date_input("To", value=last_month_end, key="export_to")
+
+    if st.button("📥 Generate Excel", type="primary"):
+        if not sel_member or not sel_project:
+            st.error("Please select member and project")
+            return
+
+        try:
+            with st.spinner("Generating Excel..."):
+                # Get entries
+                entries = db.get_entries_for_user(sel_member["id"])
+                # Get project-specific activity codes
+                project_acts = db.get_project_acts(sel_project)
+
+                buffer = excel_export.export_member_timesheet(
+                    member=sel_member,
+                    project_name=sel_project,
+                    project_acts=project_acts,
+                    entries=entries,
+                    from_date=from_date.strftime("%Y-%m-%d"),
+                    to_date=to_date.strftime("%Y-%m-%d"),
+                    company=sel_member.get("company", "GCC")
+                )
+
+                filename = f"Timesheet_{sel_member['name'].replace(' ', '_')}_{sel_project.replace(' ', '_')}_{from_date.strftime('%b%Y')}.xlsx"
+
+                st.download_button(
+                    "📥 Download " + filename,
+                    buffer.getvalue(),
+                    filename,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+                st.success(f"✅ Excel ready — click download above!")
+
+        except Exception as e:
+            st.error(f"Export failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
 
 
 # ════════════════════════════════════════════════════
