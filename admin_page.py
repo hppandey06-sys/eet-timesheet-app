@@ -372,8 +372,9 @@ def show_export_section(members):
         sel_member = next((m for m in members if m["name"] == sel_member_name), None)
 
     with col2:
-        project_options = [p["name"] for p in projects]
-        sel_project = st.selectbox("Project", project_options, key="export_project")
+        project_options = ["ALL PROJECTS"] + [p["name"] for p in projects]
+        sel_project = st.selectbox("Project", project_options, key="export_project",
+                                    help="Choose 'ALL PROJECTS' to combine all projects in one Excel")
 
     # Default to last calendar month
     today = date.today()
@@ -392,10 +393,14 @@ def show_export_section(members):
 
         try:
             with st.spinner("Generating Excel..."):
-                # Get entries
+                # Get entries for member
                 entries = db.get_entries_for_user(sel_member["id"])
-                # Get project-specific activity codes
-                project_acts = db.get_project_acts(sel_project)
+
+                # Get project-specific activity codes (empty for ALL PROJECTS)
+                if sel_project == "ALL PROJECTS":
+                    project_acts = []
+                else:
+                    project_acts = db.get_project_acts(sel_project)
 
                 buffer = excel_export.export_member_timesheet(
                     member=sel_member,
@@ -407,7 +412,8 @@ def show_export_section(members):
                     company=sel_member.get("company", "GCC")
                 )
 
-                filename = f"Timesheet_{sel_member['name'].replace(' ', '_')}_{sel_project.replace(' ', '_')}_{from_date.strftime('%b%Y')}.xlsx"
+                proj_label = "All_Projects" if sel_project == "ALL PROJECTS" else sel_project.replace(' ', '_')
+                filename = f"Timesheet_{sel_member['name'].replace(' ', '_')}_{proj_label}_{from_date.strftime('%b%Y')}.xlsx"
 
                 st.download_button(
                     "📥 Download " + filename,
@@ -420,6 +426,95 @@ def show_export_section(members):
 
         except Exception as e:
             st.error(f"Export failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+    # ── BULK EXPORT — all members at once ──
+    st.markdown("---")
+    st.markdown("##### 📦 Bulk Export — All Members (ZIP file)")
+    st.caption("Generate Excel files for ALL team members in one go, packaged as a ZIP.")
+
+    col1, col2, col3, col4 = st.columns([2, 2, 1.5, 1.5])
+    with col1:
+        bulk_company = st.selectbox("Company filter",
+                                     ["All"] + COMPANIES,
+                                     key="bulk_company")
+    with col2:
+        bulk_proj_options = ["ALL PROJECTS"] + [p["name"] for p in projects]
+        bulk_project = st.selectbox("Project", bulk_proj_options, key="bulk_project")
+    with col3:
+        bulk_from = st.date_input("From", value=last_month_start, key="bulk_from")
+    with col4:
+        bulk_to = st.date_input("To", value=last_month_end, key="bulk_to")
+
+    if st.button("📦 Generate Bulk ZIP", type="secondary"):
+        # Filter members
+        if bulk_company == "All":
+            members_to_export = members
+        else:
+            members_to_export = [m for m in members if m.get("company") == bulk_company]
+
+        if not members_to_export:
+            st.error("No members found for the selected company")
+            return
+
+        try:
+            import zipfile
+            from io import BytesIO
+
+            zip_buf = BytesIO()
+            with st.spinner(f"Generating Excel for {len(members_to_export)} members..."):
+                progress = st.progress(0)
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for i, m in enumerate(members_to_export):
+                        try:
+                            entries = db.get_entries_for_user(m["id"])
+                            # Skip members with no entries in the date range
+                            from_str = bulk_from.strftime("%Y-%m-%d")
+                            to_str = bulk_to.strftime("%Y-%m-%d")
+                            relevant = [e for e in entries
+                                       if from_str <= e["entry_date"] <= to_str]
+                            if not relevant:
+                                continue
+
+                            if bulk_project == "ALL PROJECTS":
+                                p_acts = []
+                            else:
+                                p_acts = db.get_project_acts(bulk_project)
+
+                            buf = excel_export.export_member_timesheet(
+                                member=m,
+                                project_name=bulk_project,
+                                project_acts=p_acts,
+                                entries=entries,
+                                from_date=from_str,
+                                to_date=to_str,
+                                company=m.get("company", "GCC")
+                            )
+
+                            proj_label = "All_Projects" if bulk_project == "ALL PROJECTS" else bulk_project.replace(' ', '_')
+                            fname = f"{m['company']}_{m['name'].replace(' ', '_')}_{proj_label}_{bulk_from.strftime('%b%Y')}.xlsx"
+                            zf.writestr(fname, buf.getvalue())
+                        except Exception as e:
+                            st.warning(f"Skipped {m['name']}: {e}")
+
+                        progress.progress((i + 1) / len(members_to_export))
+
+            zip_buf.seek(0)
+            zip_size_kb = len(zip_buf.getvalue()) / 1024
+            zip_filename = f"Timesheets_{bulk_company}_{bulk_from.strftime('%b%Y')}.zip"
+
+            st.success(f"✅ ZIP ready ({zip_size_kb:.0f} KB) — click below to download")
+            st.download_button(
+                f"📥 Download {zip_filename}",
+                zip_buf.getvalue(),
+                zip_filename,
+                "application/zip",
+                type="primary"
+            )
+
+        except Exception as e:
+            st.error(f"Bulk export failed: {e}")
             import traceback
             st.code(traceback.format_exc())
 
