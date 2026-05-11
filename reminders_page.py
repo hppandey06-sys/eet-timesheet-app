@@ -8,6 +8,9 @@ Three views:
    2. LAST WEEK    - members with < (working days x 8) hrs last completed week
    3. LAST MONTH   - members with < (working days x 8) hrs last completed month
 
+Uses db.get_members() and db.get_all_entries() (existing app functions) so
+schema mismatches cannot occur.
+
 Access: admins + super_admins only.
 """
 import streamlit as st
@@ -21,24 +24,9 @@ import db
 DAILY_TARGET_HOURS = 8
 
 
-def _get_sb():
-    """Return Supabase client regardless of how db.py exposes it."""
-    candidates = ['get_supabase', 'get_client', 'get_supabase_client',
-                  'supabase_client', 'client']
-    for fn_name in candidates:
-        if hasattr(db, fn_name):
-            attr = getattr(db, fn_name)
-            return attr() if callable(attr) else attr
-    if hasattr(db, 'supabase'):
-        return db.supabase
-    raise ImportError(
-        "reminders_page.py could not find a Supabase client in db.py. "
-        "Expected one of: get_supabase(), get_client(), get_supabase_client(), "
-        "supabase_client(), client(), or a 'supabase' attribute."
-    )
-
-
+# -------------------------------------------------
 # Helpers
+# -------------------------------------------------
 def _working_days(start, end):
     n, d = 0, start
     while d <= end:
@@ -69,48 +57,50 @@ def _last_completed_month(today):
     return first_prev, last_prev
 
 
-@st.cache_data(ttl=300)
-def load_members():
-    sb = _get_sb()
-    res = sb.table('ts_members').select(
-        'id,name,email,company,department,discipline,role'
-    ).execute()
-    df = pd.DataFrame(res.data)
-    if df.empty:
-        return df
-    return df[df['department'] == 'Engineering'].copy()
+def _to_date(d):
+    """Coerce a date-like value (str or date) to date."""
+    if isinstance(d, date):
+        return d
+    if isinstance(d, str):
+        return pd.to_datetime(d).date()
+    return d
 
 
-@st.cache_data(ttl=60)
-def load_entries(start, end):
-    sb = _get_sb()
-    res = (sb.table('ts_entries')
-             .select('member_id,project,activity,entry_date,hours')
-             .gte('entry_date', start.isoformat())
-             .lte('entry_date', end.isoformat())
-             .execute())
-    df = pd.DataFrame(res.data)
-    if df.empty:
-        return df
-    df['entry_date'] = pd.to_datetime(df['entry_date']).dt.date
-    df['hours'] = pd.to_numeric(df['hours'], errors='coerce').fillna(0)
-    return df
-
-
-def compute_shortfall(members_df, entries_df, start, end):
+# -------------------------------------------------
+# Core computation - uses db.get_members() and db.get_all_entries()
+# -------------------------------------------------
+def compute_shortfall(start, end):
+    """For each Engineering member, compute filled vs target hrs in [start,end]."""
+    members = db.get_members()
+    entries = db.get_all_entries()
     target = _working_days(start, end) * DAILY_TARGET_HOURS
+
+    # Filter entries by date range in Python
+    in_range = []
+    for e in entries:
+        d = _to_date(e.get('entry_date'))
+        if d and start <= d <= end:
+            in_range.append(e)
+
+    # Sum hrs by uid
+    hrs_by_uid = {}
+    for e in in_range:
+        uid = e.get('uid')
+        hrs = float(e.get('hrs', 0) or 0)
+        hrs_by_uid[uid] = hrs_by_uid.get(uid, 0) + hrs
+
+    # Build rows for Engineering members only
     rows = []
-    for _, m in members_df.iterrows():
-        mid = m['id']
-        if entries_df.empty:
-            filled = 0
-        else:
-            filled = entries_df[entries_df['member_id'] == mid]['hours'].sum()
+    for m in members:
+        if m.get('dept') != 'Engineering':
+            continue
+        mid = m.get('id')
+        filled = hrs_by_uid.get(mid, 0)
         shortfall = max(0, target - filled)
         pct = (filled / target * 100) if target else 0
         rows.append({
             'ID': mid,
-            'Name': m['name'],
+            'Name': m.get('name', ''),
             'Email': m.get('email', ''),
             'Discipline': m.get('discipline', ''),
             'Filled Hrs': round(filled, 1),
@@ -119,6 +109,8 @@ def compute_shortfall(members_df, entries_df, start, end):
             'Fill %': round(pct, 1),
         })
     df = pd.DataFrame(rows)
+    if df.empty:
+        return df
     return df.sort_values(['Fill %', 'Name']).reset_index(drop=True)
 
 
@@ -126,6 +118,9 @@ def filter_below_target(df, threshold_pct=100):
     return df[df['Fill %'] < threshold_pct].copy()
 
 
+# -------------------------------------------------
+# Message builders
+# -------------------------------------------------
 def build_email(period_label, period_dates, below_df):
     subject = "Action: Timesheet pending - " + period_label + " (" + period_dates + ")"
     n = len(below_df)
@@ -159,7 +154,10 @@ def build_excel(below_df):
     return out.read()
 
 
-def _render_period(period_label, start, end, members_df, key_prefix):
+# -------------------------------------------------
+# Period renderer
+# -------------------------------------------------
+def _render_period(period_label, start, end, key_prefix):
     if start == end:
         period_dates = start.strftime('%d-%b-%Y')
     else:
@@ -170,8 +168,11 @@ def _render_period(period_label, start, end, members_df, key_prefix):
     st.caption("Target = " + str(_working_days(start, end)) + " working days x "
                + str(DAILY_TARGET_HOURS) + " hrs = **" + str(target) + " hrs**")
 
-    entries_df = load_entries(start, end)
-    shortfall = compute_shortfall(members_df, entries_df, start, end)
+    shortfall = compute_shortfall(start, end)
+    if shortfall.empty:
+        st.warning("No Engineering members found.")
+        return
+
     below = filter_below_target(shortfall, threshold_pct=100)
 
     k1, k2, k3, k4 = st.columns(4)
@@ -247,6 +248,9 @@ def _render_period(period_label, start, end, members_df, key_prefix):
                        key=key_prefix + '_dl')
 
 
+# -------------------------------------------------
+# Main entry point - call from admin_page.py
+# -------------------------------------------------
 def render(current_user=None):
     if current_user is None:
         current_user = st.session_state.get('user', {})
@@ -263,11 +267,6 @@ def render(current_user=None):
     last_mon, last_sun = _last_completed_week(today)
     last_m_start, last_m_end = _last_completed_month(today)
 
-    members_df = load_members()
-    if members_df.empty:
-        st.warning("No Engineering members found in database.")
-        return
-
     t1, t2, t3 = st.tabs([
         "Yesterday (" + yesterday_wd.strftime('%d-%b') + ")",
         "Last Week (" + last_mon.strftime('%d-%b') + "-" + last_sun.strftime('%d-%b') + ")",
@@ -275,8 +274,8 @@ def render(current_user=None):
     ])
 
     with t1:
-        _render_period("Yesterday", yesterday_wd, yesterday_wd, members_df, 'yest')
+        _render_period("Yesterday", yesterday_wd, yesterday_wd, 'yest')
     with t2:
-        _render_period("Last Week", last_mon, last_sun, members_df, 'week')
+        _render_period("Last Week", last_mon, last_sun, 'week')
     with t3:
-        _render_period("Last Month", last_m_start, last_m_end, members_df, 'month')
+        _render_period("Last Month", last_m_start, last_m_end, 'month')
