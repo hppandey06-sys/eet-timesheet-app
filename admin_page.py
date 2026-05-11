@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from io import BytesIO
 import db
 import excel_export
+import reminders_page
 from constants import (
     DEPT_DISCIPLINES, DISCIPLINE_ACTIVITIES, get_month_label,
     todayIST, HOLIDAYS_2026, COMPANIES
@@ -34,7 +35,7 @@ def show():
     with tab3:
         show_activity_codes_tab()
     with tab4:
-        show_reminders_tab()
+        reminders_page.render(user)
     with tab5:
         show_entries_tab()
 
@@ -627,4 +628,3 @@ def show_entries_tab():
         })
     df = pd.DataFrame(df_data)
     st.dataframe(df, use_container_width=True, hide_index=True)
-    import reminders_page
