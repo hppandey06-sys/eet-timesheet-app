@@ -627,3 +627,4 @@ def show_entries_tab():
         })
     df = pd.DataFrame(df_data)
     st.dataframe(df, use_container_width=True, hide_index=True)
+    import reminders_page
