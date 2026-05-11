@@ -201,7 +201,7 @@ def _render_period(period_label, start, end, key_prefix):
         return 'background-color: #FFFFFF'
 
     styled = (view.style
-                  .applymap(_color, subset=['Fill %'])
+                  .map(_color, subset=['Fill %'])
                   .format({'Filled Hrs': '{:.1f}',
                            'Shortfall': '{:.1f}',
                            'Fill %': '{:.0f}%'}))
