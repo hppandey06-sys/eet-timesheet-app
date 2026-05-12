@@ -29,6 +29,30 @@ def get_client() -> Client:
     return create_client(url, key)
 
 
+
+
+# ════════════════════════════════════════════════════
+# PAGINATION HELPER — bypasses Supabase 1000-row default
+# ════════════════════════════════════════════════════
+def _fetch_all_pages(query_builder, page_size: int = 1000):
+    """
+    Run a Supabase query in pages and return the full concatenated result.
+    Pass an UNEXECUTED query builder (do NOT call .execute() yourself).
+    Example:
+        sb = get_client()
+        rows = _fetch_all_pages(sb.table("ts_entries").select("*"))
+    """
+    all_rows = []
+    offset = 0
+    while True:
+        result = query_builder.range(offset, offset + page_size - 1).execute()
+        batch = result.data or []
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    return all_rows
+
 # ════════════════════════════════════════════════════
 # AUTHENTICATION
 # ════════════════════════════════════════════════════
@@ -170,9 +194,11 @@ def get_entries_for_user(uid):
 
 @st.cache_data(ttl=30)
 def _get_entries_for_user_cached(uid):
+    """Paginated fetch — bypasses Supabase 1000-row default limit."""
     sb = get_client()
-    result = sb.table("ts_entries").select("*").eq("uid", uid).order("entry_date", desc=True).execute()
-    return result.data or []
+    return _fetch_all_pages(
+        sb.table("ts_entries").select("*").eq("uid", uid).order("entry_date", desc=True)
+    )
 
 
 def get_all_entries():
@@ -182,9 +208,11 @@ def get_all_entries():
 
 @st.cache_data(ttl=60)
 def _get_all_entries_cached():
+    """Paginated fetch — bypasses Supabase 1000-row default limit."""
     sb = get_client()
-    result = sb.table("ts_entries").select("*").order("entry_date", desc=True).execute()
-    return result.data or []
+    return _fetch_all_pages(
+        sb.table("ts_entries").select("*").order("entry_date", desc=True)
+    )
 
 
 def get_entries_for_date(uid, entry_date):
