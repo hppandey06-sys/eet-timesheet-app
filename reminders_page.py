@@ -69,18 +69,34 @@ def _to_date(d):
 # -------------------------------------------------
 # Core computation - uses db.get_members() and db.get_all_entries()
 # -------------------------------------------------
+def _fetch_entries_in_range(start, end):
+    """Fetch ts_entries within [start, end] directly, paginated to bypass
+    Supabase 1000-row default limit."""
+    sb = db.get_client()
+    all_rows = []
+    page_size = 1000
+    offset = 0
+    while True:
+        result = (sb.table("ts_entries")
+                    .select("*")
+                    .gte("entry_date", start.isoformat())
+                    .lte("entry_date", end.isoformat())
+                    .order("entry_date")
+                    .range(offset, offset + page_size - 1)
+                    .execute())
+        batch = result.data or []
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    return all_rows
+
+
 def compute_shortfall(start, end):
     """For each Engineering member, compute filled vs target hrs in [start,end]."""
     members = db.get_members()
-    entries = db.get_all_entries()
+    in_range = _fetch_entries_in_range(start, end)
     target = _working_days(start, end) * DAILY_TARGET_HOURS
-
-    # Filter entries by date range in Python
-    in_range = []
-    for e in entries:
-        d = _to_date(e.get('entry_date'))
-        if d and start <= d <= end:
-            in_range.append(e)
 
     # Sum hrs by uid
     hrs_by_uid = {}
