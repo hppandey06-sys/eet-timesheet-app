@@ -82,6 +82,7 @@ def _fetch_entries_in_range(start, end):
                     .gte("entry_date", start.isoformat())
                     .lte("entry_date", end.isoformat())
                     .order("entry_date")
+                    .order("id")  # tiebreaker for stable pagination
                     .range(offset, offset + page_size - 1)
                     .execute())
         batch = result.data or []
