@@ -194,10 +194,13 @@ def get_entries_for_user(uid):
 
 @st.cache_data(ttl=30)
 def _get_entries_for_user_cached(uid):
-    """Paginated fetch — bypasses Supabase 1000-row default limit."""
+    """Paginated fetch — bypasses Supabase 1000-row default limit.
+    Uses (entry_date DESC, id ASC) for DETERMINISTIC ordering."""
     sb = get_client()
     return _fetch_all_pages(
-        sb.table("ts_entries").select("*").eq("uid", uid).order("entry_date", desc=True)
+        sb.table("ts_entries").select("*").eq("uid", uid)
+          .order("entry_date", desc=True)
+          .order("id")  # tiebreaker for stable pagination
     )
 
 
@@ -208,10 +211,15 @@ def get_all_entries():
 
 @st.cache_data(ttl=60)
 def _get_all_entries_cached():
-    """Paginated fetch — bypasses Supabase 1000-row default limit."""
+    """Paginated fetch — bypasses Supabase 1000-row default limit.
+    Uses (entry_date DESC, id ASC) for DETERMINISTIC ordering — prevents
+    duplicate or skipped rows across page boundaries when many rows
+    share the same entry_date."""
     sb = get_client()
     return _fetch_all_pages(
-        sb.table("ts_entries").select("*").order("entry_date", desc=True)
+        sb.table("ts_entries").select("*")
+          .order("entry_date", desc=True)
+          .order("id")  # tiebreaker for stable pagination
     )
 
 
