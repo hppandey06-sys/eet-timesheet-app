@@ -1674,14 +1674,44 @@ def render(user=None):
     }.get(role, role)
     st.caption(f"Logged in as: **{user.get('name', '?')}** · Role: {role_label}")
 
-    # Load current meeting
-    meeting = load_current_meeting()
-    if not meeting:
+    # Load all meetings (for selector)
+    all_meetings = load_all_meetings()
+    if not all_meetings:
         st.warning(
-            "No active meeting found. Create the next meeting in the database "
-            "(or run schema setup if MER tables don't exist)."
+            "No meetings found in the database. Run schema setup (Delivery 1) first."
         )
         return
+
+    # Meeting selector — dropdown to switch between meetings
+    def meeting_label(m):
+        status_emoji = {
+            'DRAFT': '📋', 'PREP_OPEN': '📝', 'PREP_CLOSED': '🔒',
+            'IN_MEETING': '🗓', 'COMPLETED': '✅', 'PUBLISHED': '📤', 'ARCHIVED': '🗄'
+        }.get(m.get('status', ''), '•')
+        return f"{status_emoji} Meeting #{m['meeting_no']:02d} — Reviewing {m['review_month']} — {m.get('status', '?')}"
+
+    # Default to most recent active meeting (or first in list)
+    default_idx = 0
+    for i, m in enumerate(all_meetings):
+        if m.get('status') in ('DRAFT', 'PREP_OPEN', 'PREP_CLOSED', 'IN_MEETING'):
+            default_idx = i
+            break
+
+    col_sel, col_info = st.columns([3, 1])
+    with col_sel:
+        picked_idx = st.selectbox(
+            "🗓 Select Meeting",
+            range(len(all_meetings)),
+            format_func=lambda i: meeting_label(all_meetings[i]),
+            index=default_idx,
+            key='mer_meeting_picker',
+        )
+    meeting = all_meetings[picked_idx]
+    with col_info:
+        if meeting.get('status') in ('PUBLISHED', 'ARCHIVED', 'COMPLETED'):
+            st.caption(f"📚 Archive view — {meeting.get('status')}")
+        else:
+            st.caption(f"🔴 Active — {meeting.get('status')}")
 
     # Tab selector — based on permissions
     if can_access_admin_tabs(user):
