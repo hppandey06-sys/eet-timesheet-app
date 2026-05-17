@@ -194,6 +194,13 @@ def show_topbar():
     # Navigation tabs
     tabs = ["🏠 Home", "📋 My Timesheet", "👥 Team View", "📊 Reports"]
     page_ids = ["home", "timesheet", "team", "reports"]
+
+    # MER tab visible to super admins + discipline leads
+    import mer_page
+    if mer_page.can_access_mer(user):
+        tabs.append("📅 MER")
+        page_ids.append("mer")
+
     if is_admin:
         tabs.extend(["⚙️ Admin", "📤 Upload Data"])
         page_ids.extend(["admin", "upload"])
@@ -238,6 +245,9 @@ def main():
     elif page == "reports":
         import reports_page
         reports_page.show()
+    elif page == "mer":
+        import mer_page
+        mer_page.render(st.session_state.user)
     elif page == "admin":
         import admin_page
         admin_page.show()
