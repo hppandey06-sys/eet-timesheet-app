@@ -632,7 +632,7 @@ def render_overview_tab(meeting, user):
     n_submitted = sum(1 for i in inputs if i.get('status') == 'SUBMITTED')
     n_late = sum(1 for i in inputs if i.get('status') == 'LATE')
     n_pending = len(all_disciplines) - len(submitted_discs)
-    deadline_str = meeting.get('prep_closes_at', 'TBD')[:10] if meeting.get('prep_closes_at') else 'TBD'
+    deadline_str = (meeting.get('prep_closes_at') or 'TBD')[:10] if meeting.get('prep_closes_at') else 'TBD'
     st.caption(f"{n_submitted} submitted · {n_late} late · {n_pending} pending · Deadline: {deadline_str}")
 
     # Super Admin section (owner-only)
@@ -653,7 +653,7 @@ def render_overview_tab(meeting, user):
                         rows.append({
                             'Name': mem.get('name', '?'),
                             'Role': sa['role'],
-                            'Granted on': sa.get('granted_at', '')[:10] if sa.get('granted_at') else '',
+                            'Granted on': (sa.get('granted_at') or '')[:10],
                         })
                     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             except Exception as e:
@@ -1074,7 +1074,7 @@ def render_meeting_tab(meeting, user):
         for d in decisions:
             with st.expander(f"📌 {d.get('topic', 'Untitled')}", expanded=False):
                 st.write(d.get('decision_text', ''))
-                st.caption(f"Captured: {d.get('captured_at', '')[:16]}")
+                st.caption(f"Captured: {(d.get('captured_at') or '')[:16]}")
 
     with st.form("add_decision_form", clear_on_submit=True):
         col1, col2 = st.columns([1, 2])
@@ -1196,7 +1196,9 @@ def render_report_tab(meeting, user):
             st.rerun()
         col2.caption("Move to PUBLISHED state once report is reviewed by Sangeeta and distributed.")
     elif meeting['status'] == 'PUBLISHED':
-        st.success(f"✅ Report published on {meeting.get('published_at', '')[:10]}")
+        published_at = meeting.get('published_at') or ''
+        published_str = published_at[:10] if published_at else 'date not recorded'
+        st.success(f"✅ Report published on {published_str}")
     else:
         st.info(f"Mark meeting as COMPLETED first (from MEETING tab) to enable publishing.")
 
@@ -1236,7 +1238,7 @@ def render_notifications(meeting):
     month_name = date(year, month, 1).strftime('%B %Y')
 
     if status == 'PREP_OPEN':
-        prep_close = meeting.get('prep_closes_at', '')[:10] if meeting.get('prep_closes_at') else 'TBD'
+        prep_close = (meeting.get('prep_closes_at') or '')[:10] or 'TBD'
         msg = f"""📅 *Monthly Engineering Review #{meeting['meeting_no']:02d}*
 
 Dear Discipline Leads,
