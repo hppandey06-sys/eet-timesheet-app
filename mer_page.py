@@ -944,4 +944,3 @@ def render(user=None):
             f"As a discipline lead, you can fill PREP inputs for your discipline."
         )
         render_prep_tab(meeting, user)
-
