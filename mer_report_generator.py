@@ -138,7 +138,14 @@ def _load_entries_for_month(year, month):
 
 
 def _narrative(meeting, key, default=None):
+    """Read a key from meeting_narrative. Handles both dict and JSON-string formats."""
+    import json
     n = meeting.get('meeting_narrative')
+    if isinstance(n, str):
+        try:
+            n = json.loads(n)
+        except Exception:
+            return default
     if isinstance(n, dict):
         v = n.get(key)
         return v if v is not None else default
