@@ -208,9 +208,12 @@ def _build_cover(doc, meeting):
     review_month = meeting['review_month']
     year, month = map(int, review_month.split('-'))
     month_name = date(year, month, 1).strftime('%B %Y')
-    last_day = date(year, month + 1, 1) if month < 12 else date(year + 1, 1, 1)
-    last_day = last_day.replace(day=1)
-    last_day_actual = (last_day - pd.Timedelta(days=1)).date() if month < 12 else date(year, 12, 31)
+    # Last day of the review month
+    if month < 12:
+        last_day_actual = date(year, month + 1, 1) - pd.Timedelta(days=1)
+        last_day_actual = last_day_actual.date() if hasattr(last_day_actual, 'date') else last_day_actual
+    else:
+        last_day_actual = date(year, 12, 31)
 
     # Title
     p = doc.add_paragraph()
@@ -693,4 +696,3 @@ def generate_report_filename(meeting):
     """Standard filename for the generated report."""
     return (f"GCC_MER_Meeting_{meeting['meeting_no']:02d}_"
             f"{meeting['review_month'].replace('-', '_')}.docx")
-
