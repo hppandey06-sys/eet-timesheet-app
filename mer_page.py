@@ -269,229 +269,343 @@ def can_access_admin_tabs(user):
 # ════════════════════════════════════════════════════
 
 def render_overview_tab(meeting, user):
-    """Combined cockpit — timesheet + meeting data."""
+    """OVERVIEW tab — formatted to match the GCC Monthly Engineering Meeting Word template.
+    
+    Sections:
+      1. Meeting header (date, no, chair, attendees)
+      2. Project Status Table
+      3. Engineering Activity Summary (from timesheet)
+      4. Engineering Strength Discipline-wise
+      5. Open Action Items
+      6. Critical Items / Decisions Needed
+    """
     review_month = meeting['review_month']  # 'YYYY-MM'
     year, month = map(int, review_month.split('-'))
     month_name = date(year, month, 1).strftime('%B %Y')
+    last_day = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
 
-    # Cycle banner
-    sched = meeting.get('scheduled_date', '')
-    prep_close = meeting.get('prep_closes_at', '')
-    cycle_text = f"📅 **Monthly cycle:** Review month = {month_name} · "
-    if sched:
-        cycle_text += f"Meeting scheduled: **{sched}** · "
-    cycle_text += f"Status: {STATE_LABEL.get(meeting['status'], meeting['status'])}"
+    # ── Meeting Header ──
     st.markdown(
-        f"<div style='background:#F0F7FB;padding:10px 14px;border-radius:8px;"
-        f"font-size:12px;color:#185FA5;margin-bottom:12px;'>{cycle_text}</div>",
+        f"<div style='background:#1F4E78;color:#FFF;padding:14px 18px;border-radius:10px;"
+        f"margin-bottom:14px;'>"
+        f"<table style='width:100%;color:#FFF;font-size:12px;'>"
+        f"<tr><td><b>GCC – Engineering Monthly Meeting</b></td>"
+        f"<td style='text-align:right;'>Meeting No: <b>{meeting['meeting_no']:02d}</b></td></tr>"
+        f"<tr><td>Reviewing: <b>{month_name}</b> (data as of {last_day.strftime('%d-%b-%Y')})</td>"
+        f"<td style='text-align:right;'>Scheduled: <b>{meeting.get('scheduled_date', 'TBD')}</b></td></tr>"
+        f"<tr><td>Chair / Presenter: <b>{meeting.get('chair', 'HP')}</b></td>"
+        f"<td style='text-align:right;'>Reviewer: <b>{meeting.get('reviewer', 'Sangeeta')}</b></td></tr>"
+        f"<tr><td>Location: <b>GCC Arioli, Mumbai</b></td>"
+        f"<td style='text-align:right;'>Status: <b>{STATE_LABEL.get(meeting['status'], meeting['status'])}</b></td></tr>"
+        f"</table></div>",
         unsafe_allow_html=True
     )
 
-    # ── Load and process timesheet data ──
+    # ── Load timesheet data for the review month ──
     entries = load_entries_for_month(year, month)
     members = db.get_members()
 
     if not entries:
-        st.warning(f"No timesheet entries for {month_name}.")
-        return
+        st.warning(f"No timesheet entries for {month_name}. Showing structure only.")
+        df = pd.DataFrame()
+    else:
+        df = pd.DataFrame(entries)
+        df['Hours'] = df['hrs'].astype(float)
+        df['Description'] = df['description'].fillna('').astype(str)
+        mem_lookup = {m['id']: m for m in members}
+        df['member_name'] = df['uid'].map(lambda u: mem_lookup.get(u, {}).get('name', f'uid:{u}'))
+        df['discipline'] = df['uid'].map(lambda u: mem_lookup.get(u, {}).get('discipline', '-'))
 
-    df = pd.DataFrame(entries)
-    df['Hours'] = df['hrs'].astype(float)
-    df['Description'] = df['description'].fillna('').astype(str)
-
-    # Build member lookup
-    mem_lookup = {m['id']: m for m in members}
-    df['member_name'] = df['uid'].map(lambda u: mem_lookup.get(u, {}).get('name', f'uid:{u}'))
-    df['discipline'] = df['uid'].map(lambda u: mem_lookup.get(u, {}).get('discipline', '-'))
-
-    # Exclude leadership (HP + Sangeeta) from productivity numbers
     excluded_uids = {m['id'] for m in members if m.get('excluded_from_productivity')}
-    df_eng = df[~df['uid'].isin(excluded_uids)].copy()
+    df_eng = df[~df['uid'].isin(excluded_uids)].copy() if len(df) else pd.DataFrame()
+    if len(df_eng):
+        df_eng['Category'] = df_eng.apply(
+            lambda r: classify_activity(r['act'], r['Description']), axis=1
+        )
 
-    # Classify each entry
-    df_eng['Category'] = df_eng.apply(
-        lambda r: classify_activity(r['act'], r['Description']), axis=1
-    )
+    # ════════════════════════════════════════
+    # SECTION 1: PROJECT STATUS TABLE
+    # ════════════════════════════════════════
+    st.markdown("## 1. Project Status — Key Updates from Each Project")
 
-    # ── Section 1: Month KPIs ──
-    st.markdown("### ① Month KPIs <span style='font-size:11px;color:#666;'>(from timesheet)</span>",
-                unsafe_allow_html=True)
+    # Aggregate hours by project from timesheet
+    if len(df_eng):
+        proj_hours = df_eng.groupby('proj').agg(
+            Hours=('Hours', 'sum'),
+            Members=('uid', 'nunique'),
+        ).reset_index().sort_values('Hours', ascending=False)
+    else:
+        proj_hours = pd.DataFrame(columns=['proj', 'Hours', 'Members'])
 
-    total_hrs = df_eng['Hours'].sum()
-    n_reporting = df_eng['uid'].nunique()
-    eng_members_total = sum(
-        1 for m in members
-        if m.get('dept') == 'Engineering' and m['id'] not in excluded_uids
-    )
-    n_projects = df_eng['proj'].nunique()
+    # Try to pull PREP-submitted project status from this month's inputs
+    inputs = load_inputs_for_meeting(meeting['id'])
+    all_project_statuses = {}
+    for inp in inputs:
+        ps = inp.get('project_status') or []
+        if isinstance(ps, list):
+            for p in ps:
+                pname = (p.get('project') or '').strip()
+                if not pname:
+                    continue
+                if pname not in all_project_statuses:
+                    all_project_statuses[pname] = []
+                all_project_statuses[pname].append({
+                    'phase': p.get('phase', ''),
+                    'pct': p.get('pct', ''),
+                    'status': p.get('status', ''),
+                    'discipline': inp.get('discipline', ''),
+                })
 
-    cat_totals = df_eng.groupby('Category')['Hours'].sum()
-    hv = sum(cat_totals.get(c, 0) for c in ['DESIGN', 'REVIEW', 'COORD'])
-    hv_pct = hv / total_hrs * 100 if total_hrs else 0
-    unclass = cat_totals.get('UNCLASS', 0)
-    unclass_pct = unclass / total_hrs * 100 if total_hrs else 0
-    leave = cat_totals.get('LEAVE', 0)
-    leave_pct = leave / total_hrs * 100 if total_hrs else 0
-
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Hours filled", f"{total_hrs:,.0f}")
-    c2.metric("Reporting", f"{n_reporting} / {eng_members_total}")
-    c3.metric("Projects active", n_projects)
-    c4.metric("High-value", f"{hv_pct:.0f}%", help="Design + Review + Coord")
-    c5.metric("Unclassified", f"{unclass_pct:.0f}%",
-              delta_color="inverse",
-              help="Data quality flag — OTHERS or blank descriptions")
-    c6.metric("Leave", f"{leave_pct:.0f}%")
+    # Build display rows: union of (project-with-hours) + (project-with-PREP-status)
+    all_project_names = set(proj_hours['proj'].tolist()) | set(all_project_statuses.keys())
+    
+    if all_project_names:
+        rows = []
+        for sl_no, pname in enumerate(sorted(all_project_names), 1):
+            hrs_row = proj_hours[proj_hours['proj'] == pname]
+            hours = int(hrs_row['Hours'].iloc[0]) if len(hrs_row) else 0
+            n_disc = int(hrs_row['Members'].iloc[0]) if len(hrs_row) else 0
+            
+            # Aggregate PREP status if available
+            statuses = all_project_statuses.get(pname, [])
+            if statuses:
+                phase = statuses[0].get('phase', '')
+                pct = statuses[0].get('pct', '')
+                status_text = ' / '.join(s['status'] for s in statuses if s.get('status'))[:200]
+            else:
+                phase = ''
+                pct = ''
+                status_text = '— No PREP input yet —'
+            
+            rows.append({
+                'Sl': sl_no,
+                'Project': pname,
+                'Phase': phase or '(not set)',
+                'Hours': hours,
+                'Members': n_disc,
+                'Status / Activities': status_text,
+            })
+        
+        df_proj = pd.DataFrame(rows)
+        st.dataframe(df_proj, use_container_width=True, hide_index=True)
+        st.caption(
+            f"Total: {len(rows)} projects · "
+            f"{int(proj_hours['Hours'].sum())} hours booked · "
+            f"Phase/Status fills from PREP submissions (currently {len(inputs)} disciplines submitted)"
+        )
+    else:
+        st.info("No project activity recorded for this month.")
 
     st.markdown("---")
 
-    # ── Section 2: Discipline activity profile ──
-    st.markdown("### ② Discipline Activity Profile <span style='font-size:11px;color:#666;'>(category mix)</span>",
-                unsafe_allow_html=True)
+    # ════════════════════════════════════════
+    # SECTION 2: ENGINEERING ACTIVITY SUMMARY
+    # ════════════════════════════════════════
+    st.markdown("## 2. Engineering Activity Summary")
+    st.caption(f"Workhours analysis extracted from Timesheet · Data as of {last_day.strftime('%d-%b-%Y')}")
 
-    disc_summary = (df_eng.groupby('discipline')
-                          .agg(Hours=('Hours', 'sum'), Members=('uid', 'nunique'))
-                          .reset_index()
-                          .sort_values('Hours', ascending=False))
+    if len(df_eng):
+        total_hrs = df_eng['Hours'].sum()
+        n_reporting = df_eng['uid'].nunique()
+        eng_members_total = sum(
+            1 for m in members
+            if m.get('dept') == 'Engineering' and m['id'] not in excluded_uids
+        )
+        n_projects = df_eng['proj'].nunique()
+        cat_totals = df_eng.groupby('Category')['Hours'].sum()
+        hv = sum(cat_totals.get(c, 0) for c in ['DESIGN', 'REVIEW', 'COORD'])
+        hv_pct = hv / total_hrs * 100 if total_hrs else 0
+        unclass = cat_totals.get('UNCLASS', 0)
+        unclass_pct = unclass / total_hrs * 100 if total_hrs else 0
+        leave_pct = cat_totals.get('LEAVE', 0) / total_hrs * 100 if total_hrs else 0
 
-    for _, row in disc_summary.iterrows():
-        d = row['discipline']
-        sub = df_eng[df_eng['discipline'] == d]
-        cat_mix = sub.groupby('Category')['Hours'].sum()
-        total = sub['Hours'].sum()
-        if total == 0:
-            continue
-        cols = st.columns([2, 1, 5])
-        cols[0].markdown(f"**{d}**")
-        cols[1].markdown(f"{int(row['Hours'])}h · {int(row['Members'])} members")
-        # Build a horizontal bar
-        bar_html = '<div style="display:flex;height:18px;border-radius:4px;overflow:hidden;background:#eee;">'
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Total hours", f"{total_hrs:,.0f}")
+        c2.metric("Reporting", f"{n_reporting} / {eng_members_total}")
+        c3.metric("Projects", n_projects)
+        c4.metric("High-value", f"{hv_pct:.0f}%", help="Design + Review + Coord")
+        c5.metric("Unclassified", f"{unclass_pct:.0f}%", delta_color="inverse")
+        c6.metric("Leave", f"{leave_pct:.0f}%")
+
+        # Category mix bar
+        bar_html = '<div style="display:flex;height:18px;border-radius:4px;overflow:hidden;margin-top:10px;background:#eee;">'
         for c in CAT_ORDER:
-            v = cat_mix.get(c, 0)
+            v = cat_totals.get(c, 0)
             if v > 0:
-                pct = v / total * 100
+                pct = v / total_hrs * 100
                 bar_html += (
                     f'<div style="width:{pct:.0f}%;background:{CAT_COLORS[c]};'
                     f'color:white;font-size:10px;display:flex;align-items:center;'
                     f'justify-content:center;font-weight:500;" '
-                    f'title="{CAT_LABEL[c]}: {int(v)}h">{pct:.0f}%</div>'
+                    f'title="{CAT_LABEL[c]}: {int(v)}h">{CAT_LABEL[c]} {pct:.0f}%</div>'
                 )
         bar_html += '</div>'
-        cols[2].markdown(bar_html, unsafe_allow_html=True)
+        st.markdown(bar_html, unsafe_allow_html=True)
 
-    # Legend
-    legend_html = '<div style="margin-top:6px;font-size:10px;">'
-    for c in CAT_ORDER:
-        legend_html += (
-            f'<span style="display:inline-block;margin-right:10px;">'
-            f'<span style="display:inline-block;width:10px;height:10px;'
-            f'background:{CAT_COLORS[c]};vertical-align:middle;border-radius:2px;"></span> '
-            f'{CAT_LABEL[c]}</span>'
-        )
-    legend_html += '</div>'
-    st.markdown(legend_html, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── Section 3: Data Quality Flags ──
-    st.markdown("### ③ Data Quality Flags")
-    st.caption("Members with timesheet hygiene issues. Discipline leads see only their team.")
-
-    role = get_user_role(user)
-    is_admin = role in ('OWNER', 'SUPER_ADMIN')
-
-    # For each engineering member, compute flag
-    flags = []
-    eng_members = [m for m in members
-                   if m.get('dept') == 'Engineering'
-                   and m['id'] not in excluded_uids]
-    
-    for m in eng_members:
-        mid = m['id']
-        sub = df_eng[df_eng['uid'] == mid]
-        m_hrs = sub['Hours'].sum()
-        if m_hrs == 0:
-            flags.append({
-                'Discipline': m.get('discipline', '-'),
-                'Member': m['name'],
-                'Issue': '🔴 0 hrs filled',
-                'severity': 3,
-            })
-            continue
-        # Hours on OTHERS / unclassified
-        unclass_h = sub[sub['Category'] == 'UNCLASS']['Hours'].sum()
-        unclass_pct = unclass_h / m_hrs * 100
-        # Blank descriptions
-        n_entries = len(sub)
-        n_blank = (sub['Description'].str.len() < 5).sum()
-        blank_pct = n_blank / n_entries * 100 if n_entries else 0
-
-        if unclass_pct > 50:
-            flags.append({
-                'Discipline': m.get('discipline', '-'),
-                'Member': m['name'],
-                'Issue': f'🔴 {unclass_pct:.0f}% on OTHERS',
-                'severity': 3,
-            })
-        elif unclass_pct > 25:
-            flags.append({
-                'Discipline': m.get('discipline', '-'),
-                'Member': m['name'],
-                'Issue': f'🟡 {unclass_pct:.0f}% on OTHERS',
-                'severity': 2,
-            })
-        elif blank_pct > 50:
-            flags.append({
-                'Discipline': m.get('discipline', '-'),
-                'Member': m['name'],
-                'Issue': f'🟡 {blank_pct:.0f}% blank descriptions',
-                'severity': 2,
-            })
-
-    # Filter by discipline if lead
-    if not is_admin and role == 'DISCIPLINE_LEAD':
-        my_disc = user.get('leads_discipline', '')
-        flags = [f for f in flags if f['Discipline'] == my_disc]
-
-    if flags:
-        df_flags = pd.DataFrame(flags).sort_values('severity', ascending=False).drop(columns=['severity'])
-        st.dataframe(df_flags, use_container_width=True, hide_index=True)
-        st.caption(f"🔴 Red: 0 hrs or >50% on OTHERS · 🟡 Amber: 25-50% · 🟢 Green: <25% · "
-                   f"Total flagged: {len(flags)} of {len(eng_members)} reporting")
+        # Per-discipline breakdown table
+        with st.expander("📊 Discipline-wise breakdown", expanded=False):
+            disc_summary = (df_eng.groupby('discipline')
+                                  .agg(Hours=('Hours', 'sum'), Members=('uid', 'nunique'))
+                                  .reset_index()
+                                  .sort_values('Hours', ascending=False))
+            st.dataframe(disc_summary, use_container_width=True, hide_index=True)
     else:
-        st.success("✅ No data quality flags this month — clean reporting!")
+        st.info(f"No timesheet data for {month_name}.")
 
     st.markdown("---")
 
-    # ── Section 4: Open Action Items ──
-    st.markdown("### ④ Open Action Items <span style='font-size:11px;color:#666;'>(across all meetings)</span>",
-                unsafe_allow_html=True)
+    # ════════════════════════════════════════
+    # SECTION 3: ENGINEERING STRENGTH (DISCIPLINE-WISE)
+    # ════════════════════════════════════════
+    st.markdown("## 3. Engineering Strength — Discipline-wise")
 
+    # Count members per discipline (excluding non-engineering)
+    eng_members = [m for m in members if m.get('dept') == 'Engineering']
+    disc_counts = {}
+    for m in eng_members:
+        d = m.get('discipline', '-') or '-'
+        disc_counts[d] = disc_counts.get(d, 0) + 1
+    
+    strength_rows = []
+    total_strength = 0
+    for d, count in sorted(disc_counts.items(), key=lambda x: -x[1]):
+        # Find lead for this discipline
+        lead = next(
+            (m['name'] for m in members
+             if m.get('is_discipline_lead') and m.get('leads_discipline') == d),
+            '—'
+        )
+        strength_rows.append({
+            'Discipline': d,
+            'Strength': count,
+            'Lead': lead,
+        })
+        total_strength += count
+    
+    if strength_rows:
+        df_strength = pd.DataFrame(strength_rows)
+        st.dataframe(df_strength, use_container_width=True, hide_index=True)
+        st.caption(f"Total Engineering strength: **{total_strength}**")
+
+    st.markdown("---")
+
+    # ════════════════════════════════════════
+    # SECTION 4: OPEN ACTION ITEMS
+    # ════════════════════════════════════════
+    st.markdown("## 4. Open Action Items")
+    
     actions = load_open_actions()
     if actions:
         adf = pd.DataFrame(actions)
         today = date.today()
-        adf['_due'] = pd.to_datetime(adf['due_date']).dt.date
-        adf['Status'] = adf.apply(
-            lambda r: ('🔴 Overdue' if r['_due'] and r['_due'] < today
-                       else '🟡 Due Soon' if r['_due'] and (r['_due'] - today).days <= 7
-                       else '🟢 On Track'), axis=1)
-        adf_show = adf[['Status', 'action_text', 'owner_name', 'due_date', 'discipline', 'source_phase']]
-        adf_show.columns = ['Status', 'Action', 'Owner', 'Due', 'Discipline', 'Raised in']
+        if 'due_date' in adf.columns:
+            adf['_due'] = pd.to_datetime(adf['due_date'], errors='coerce').dt.date
+            adf['Status'] = adf.apply(
+                lambda r: ('🔴 Overdue' if pd.notna(r['_due']) and r['_due'] < today
+                           else '🟡 Due Soon' if pd.notna(r['_due']) and (r['_due'] - today).days <= 7
+                           else '🟢 On Track'), axis=1)
+        else:
+            adf['Status'] = '🟢 Open'
+        
+        cols_to_show = ['Status', 'action_text', 'owner_name', 'due_date', 'discipline', 'source_phase']
+        cols_existing = [c for c in cols_to_show if c in adf.columns]
+        adf_show = adf[cols_existing].copy()
+        adf_show.columns = ['Status', 'Action', 'Owner', 'Due', 'Discipline', 'Source'][:len(cols_existing)]
         st.dataframe(adf_show, use_container_width=True, hide_index=True)
-        st.caption(f"Total open: {len(actions)} · "
-                   f"Overdue: {sum(1 for a in actions if a.get('due_date') and pd.to_datetime(a['due_date']).date() < today)}")
+        overdue_count = sum(1 for a in actions 
+                            if a.get('due_date') and 
+                            pd.to_datetime(a['due_date'], errors='coerce') < pd.Timestamp(today))
+        st.caption(f"Total open: {len(actions)} · Overdue: {overdue_count}")
     else:
-        st.info("No open action items.")
+        st.info("No open action items. New actions can be captured in the MEETING tab (Delivery 3).")
 
     st.markdown("---")
 
-    # ── Section 5: PREP Submission Status ──
-    st.markdown("### ⑤ PREP Submission Status")
+    # ════════════════════════════════════════
+    # SECTION 5: CRITICAL ITEMS & DECISIONS NEEDED (from PREP)
+    # ════════════════════════════════════════
+    st.markdown("## 5. Critical Items & Decisions Needed")
+    st.caption("Aggregated from each discipline's PREP submissions")
+    
+    critical_compiled = []
+    for inp in inputs:
+        if inp.get('critical_items'):
+            critical_compiled.append({
+                'Discipline': inp.get('discipline', '-'),
+                'Critical Items': inp['critical_items'],
+                'Submitted by': inp.get('submitted_by', ''),
+            })
+    
+    if critical_compiled:
+        for c in critical_compiled:
+            with st.expander(f"⚠ {c['Discipline']}", expanded=True):
+                st.markdown(c['Critical Items'])
+    else:
+        st.info("No critical items submitted yet. Discipline leads will fill these in the PREP tab.")
 
-    inputs = load_inputs_for_meeting(meeting['id'])
+    st.markdown("---")
+
+    # ════════════════════════════════════════
+    # SECTION 6: DATA QUALITY FLAGS (timesheet hygiene)
+    # ════════════════════════════════════════
+    st.markdown("## 6. Data Quality Flags")
+    st.caption(f"Members with timesheet hygiene issues in {month_name}")
+    
+    role = get_user_role(user)
+    is_admin = role in ('OWNER', 'SUPER_ADMIN')
+    
+    flags = []
+    if len(df_eng):
+        eng_members_for_flags = [m for m in members
+                       if m.get('dept') == 'Engineering'
+                       and m['id'] not in excluded_uids]
+        for m in eng_members_for_flags:
+            mid = m['id']
+            sub = df_eng[df_eng['uid'] == mid]
+            m_hrs = sub['Hours'].sum() if len(sub) else 0
+            if m_hrs == 0:
+                flags.append({
+                    'Discipline': m.get('discipline', '-'),
+                    'Member': m['name'],
+                    'Issue': '🔴 0 hrs filled',
+                    'severity': 3,
+                })
+                continue
+            unclass_h = sub[sub['Category'] == 'UNCLASS']['Hours'].sum()
+            unclass_pct = unclass_h / m_hrs * 100
+            if unclass_pct > 50:
+                flags.append({
+                    'Discipline': m.get('discipline', '-'),
+                    'Member': m['name'],
+                    'Issue': f'🔴 {unclass_pct:.0f}% on OTHERS',
+                    'severity': 3,
+                })
+            elif unclass_pct > 25:
+                flags.append({
+                    'Discipline': m.get('discipline', '-'),
+                    'Member': m['name'],
+                    'Issue': f'🟡 {unclass_pct:.0f}% on OTHERS',
+                    'severity': 2,
+                })
+    
+    if not is_admin and role == 'DISCIPLINE_LEAD':
+        my_disc = user.get('leads_discipline', '')
+        flags = [f for f in flags if f['Discipline'] == my_disc]
+    
+    if flags:
+        df_flags = pd.DataFrame(flags).sort_values('severity', ascending=False).drop(columns=['severity'])
+        st.dataframe(df_flags, use_container_width=True, hide_index=True)
+    else:
+        st.success("✅ No data quality flags — clean reporting!")
+
+    st.markdown("---")
+
+    # ════════════════════════════════════════
+    # SECTION 7: PREP SUBMISSION STATUS
+    # ════════════════════════════════════════
+    st.markdown("## 7. PREP Submission Status")
+    
     submitted_discs = {i['discipline']: i for i in inputs}
-
     all_disciplines = sorted(set(
         m['leads_discipline'] for m in members
         if m.get('is_discipline_lead') and m.get('leads_discipline')
@@ -518,31 +632,32 @@ def render_overview_tab(meeting, user):
     n_submitted = sum(1 for i in inputs if i.get('status') == 'SUBMITTED')
     n_late = sum(1 for i in inputs if i.get('status') == 'LATE')
     n_pending = len(all_disciplines) - len(submitted_discs)
-    st.caption(f"{n_submitted} submitted · {n_late} late · {n_pending} pending · "
-               f"Deadline: {meeting.get('prep_closes_at', 'TBD')[:10] if meeting.get('prep_closes_at') else 'TBD'}")
+    deadline_str = meeting.get('prep_closes_at', 'TBD')[:10] if meeting.get('prep_closes_at') else 'TBD'
+    st.caption(f"{n_submitted} submitted · {n_late} late · {n_pending} pending · Deadline: {deadline_str}")
 
-    # ── Super Admin section ──
+    # Super Admin section (owner-only)
     if role == 'OWNER':
         st.markdown("---")
         with st.expander("🔒 Super Admin Permissions (owner only)", expanded=False):
             sb = db.get_client()
-            r = (sb.table('ts_mer_super_admins')
-                   .select('*, member:ts_members!member_id(name)')
-                   .eq('is_active', True)
-                   .execute())
-            sa_data = r.data or []
-            if sa_data:
-                rows = []
-                for sa in sa_data:
-                    mem = sa.get('member', {}) or {}
-                    rows.append({
-                        'Name': mem.get('name', '?'),
-                        'Role': sa['role'],
-                        'Granted on': sa.get('granted_at', '')[:10] if sa.get('granted_at') else '',
-                    })
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-            st.caption("To add a new super admin, contact HP via the Admin tab (Delivery 3 will add UI here).")
-
+            try:
+                r = (sb.table('ts_mer_super_admins')
+                       .select('*, member:ts_members!member_id(name)')
+                       .eq('is_active', True)
+                       .execute())
+                sa_data = r.data or []
+                if sa_data:
+                    rows = []
+                    for sa in sa_data:
+                        mem = sa.get('member', {}) or {}
+                        rows.append({
+                            'Name': mem.get('name', '?'),
+                            'Role': sa['role'],
+                            'Granted on': sa.get('granted_at', '')[:10] if sa.get('granted_at') else '',
+                        })
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.caption(f"(super admin list unavailable: {e})")
 
 # ════════════════════════════════════════════════════
 # PREP TAB
@@ -867,25 +982,670 @@ def render_prep_tab(meeting, user):
 # ════════════════════════════════════════════════════
 
 def render_meeting_tab(meeting, user):
-    st.info("🚧 **MEETING tab** — Coming in Delivery 3\n\n"
-            "This tab will provide live capture during the monthly meeting:\n"
-            "- Attendance tracking\n"
-            "- Decisions captured\n"
-            "- Action items raised live\n"
-            "- Per-discipline agenda walkthrough")
+    """MEETING tab — live capture during the monthly meeting."""
+    role = get_user_role(user)
+    is_admin = role in ('OWNER', 'SUPER_ADMIN')
+
+    if not is_admin:
+        st.warning("🔒 The MEETING tab is for super admins only. You can view the final REPORT once published.")
+        return
+
+    st.markdown(f"### 🗓 Meeting #{meeting['meeting_no']:02d} — Live Capture")
+    st.caption(
+        f"Reviewing {meeting['review_month']} · "
+        f"Scheduled: {meeting.get('scheduled_date', 'TBD')} · "
+        f"Status: {STATE_LABEL.get(meeting['status'], meeting['status'])}"
+    )
+
+    # Quick state controls
+    with st.expander("🎚 Meeting State Controls", expanded=False):
+        st.write(f"Current state: **{meeting['status']}**")
+        col1, col2, col3 = st.columns(3)
+        sb = db.get_client()
+        if col1.button("📝 Open PREP", disabled=meeting['status'] != 'DRAFT'):
+            sb.table('ts_mer_meetings').update({'status': 'PREP_OPEN'}).eq('id', meeting['id']).execute()
+            st.cache_data.clear()
+            st.success("PREP opened. Notify discipline leads via WhatsApp/Email below.")
+            st.rerun()
+        if col2.button("🔒 Close PREP", disabled=meeting['status'] != 'PREP_OPEN'):
+            sb.table('ts_mer_meetings').update({'status': 'PREP_CLOSED'}).eq('id', meeting['id']).execute()
+            st.cache_data.clear()
+            st.success("PREP closed.")
+            st.rerun()
+        if col3.button("✅ Mark Meeting Complete", disabled=meeting['status'] not in ('IN_MEETING', 'PREP_CLOSED')):
+            sb.table('ts_mer_meetings').update({
+                'status': 'COMPLETED',
+                'meeting_completed_at': datetime.utcnow().isoformat()
+            }).eq('id', meeting['id']).execute()
+            st.cache_data.clear()
+            st.success("Meeting marked complete. Generate the report in REPORT tab.")
+            st.rerun()
+        if meeting['status'] == 'PREP_CLOSED' and st.button("▶️ Start Meeting (move to IN_MEETING)"):
+            sb.table('ts_mer_meetings').update({
+                'status': 'IN_MEETING',
+                'meeting_started_at': datetime.utcnow().isoformat()
+            }).eq('id', meeting['id']).execute()
+            st.cache_data.clear()
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── Section 1: Attendance ──
+    st.markdown("#### ✅ Attendance")
+    members = db.get_members()
+    eng_members = [m for m in members
+                   if m.get('dept') == 'Engineering'
+                   or m.get('is_owner') or m.get('is_super_admin')]
+    
+    existing_attendance = {a['member_id']: a for a in load_attendance(meeting['id'])}
+    
+    sb = db.get_client()
+    cols = st.columns(3)
+    for idx, m in enumerate(eng_members):
+        col = cols[idx % 3]
+        mid = m['id']
+        current = existing_attendance.get(mid, {}).get('status', 'INVITED')
+        new_status = col.selectbox(
+            m['name'],
+            ['INVITED', 'PRESENT', 'ABSENT', 'APOLOGY'],
+            index=['INVITED', 'PRESENT', 'ABSENT', 'APOLOGY'].index(current),
+            key=f"att_{mid}",
+            label_visibility='visible',
+        )
+        # Save on change
+        if new_status != current:
+            payload = {
+                'meeting_id': meeting['id'],
+                'member_id': mid,
+                'member_name': m['name'],
+                'status': new_status,
+            }
+            if mid in existing_attendance:
+                sb.table('ts_mer_attendance').update(payload).eq('id', existing_attendance[mid]['id']).execute()
+            else:
+                sb.table('ts_mer_attendance').insert(payload).execute()
+
+    st.markdown("---")
+
+    # ── Section 2: Decisions Captured ──
+    st.markdown("#### 📌 Decisions Captured")
+    decisions = load_decisions(meeting['id'])
+    if decisions:
+        for d in decisions:
+            with st.expander(f"📌 {d.get('topic', 'Untitled')}", expanded=False):
+                st.write(d.get('decision_text', ''))
+                st.caption(f"Captured: {d.get('captured_at', '')[:16]}")
+
+    with st.form("add_decision_form", clear_on_submit=True):
+        col1, col2 = st.columns([1, 2])
+        topic = col1.text_input("Topic", placeholder="e.g., HPP1 RFQ")
+        decision_text = col2.text_area("Decision", placeholder="Decision text...", height=70)
+        if st.form_submit_button("➕ Capture Decision") and topic and decision_text:
+            sb.table('ts_mer_decisions').insert({
+                'meeting_id': meeting['id'],
+                'topic': topic,
+                'decision_text': decision_text,
+                'proposed_by': user['name'],
+            }).execute()
+            st.cache_data.clear()
+            st.success(f"Captured: {topic}")
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── Section 3: Action Items ──
+    st.markdown("#### 📝 Action Items")
+    actions = load_open_actions()
+    if actions:
+        df_act = pd.DataFrame(actions)
+        st.dataframe(
+            df_act[['action_text', 'owner_name', 'due_date', 'status', 'discipline']],
+            use_container_width=True, hide_index=True
+        )
+    else:
+        st.caption("No open actions yet.")
+
+    with st.form("add_action_form", clear_on_submit=True):
+        col1, col2, col3 = st.columns([3, 1, 1])
+        action_text = col1.text_input("Action description", placeholder="e.g., Issue HPP1 RFQ draft")
+        owner_name = col2.text_input("Owner", placeholder="HP / Piyush / etc.")
+        due = col3.date_input("Due date", value=None)
+        if st.form_submit_button("➕ Add Action") and action_text and owner_name:
+            sb.table('ts_mer_actions').insert({
+                'action_text': action_text,
+                'owner_name': owner_name,
+                'due_date': due.isoformat() if due else None,
+                'raised_in_meeting_id': meeting['id'],
+                'source_phase': 'MEETING',
+                'status': 'OPEN',
+            }).execute()
+            st.cache_data.clear()
+            st.success(f"Added: {action_text}")
+            st.rerun()
+
+    st.markdown("---")
+    
+    # ── Section 4: Notification message generators ──
+    with st.expander("📨 Notification Messages (copy-paste to WhatsApp/Email)", expanded=False):
+        render_notifications(meeting)
 
 
 def render_report_tab(meeting, user):
-    st.info("🚧 **REPORT tab** — Coming in Delivery 3\n\n"
-            "This tab will generate the final monthly report:\n"
-            "- Executive Summary DOCX (4-5 pages)\n"
-            "- Per-Discipline Report DOCX (15-20 pages)\n"
-            "- Distribution log")
+    """REPORT tab — auto-generate the 6-page A4 monthly report DOCX."""
+    role = get_user_role(user)
+    is_admin = role in ('OWNER', 'SUPER_ADMIN')
+
+    if not is_admin:
+        st.warning("🔒 The REPORT tab is for super admins only.")
+        return
+
+    st.markdown(f"### 📄 Monthly Report — Meeting #{meeting['meeting_no']:02d}")
+    st.caption(f"Reviewing {meeting['review_month']} · Auto-generated 6-page A4 minutes")
+
+    # Show summary of what will be in the report
+    inputs = load_inputs_for_meeting(meeting['id'])
+    actions = load_open_actions()
+    decisions_list = load_decisions(meeting['id'])
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Disciplines submitted", f"{len([i for i in inputs if i.get('status') == 'SUBMITTED'])}")
+    col2.metric("Open actions", len(actions))
+    col3.metric("Decisions captured", len(decisions_list))
+    col4.metric("Status", meeting['status'])
+
+    st.markdown("---")
+    st.markdown("##### Generate Report")
+    st.caption(
+        "Click below to generate the 6-page DOCX report from current data. "
+        "Includes: meeting metadata, key highlights, project status, manhours, "
+        "engineering strength, critical items, action items, coordination, "
+        "software/training, decisions, closing notes."
+    )
+
+    if st.button("📄 Generate DOCX Report", type="primary"):
+        with st.spinner("Generating report..."):
+            try:
+                from mer_report_generator import generate_report, generate_report_filename
+                buf = generate_report(meeting['id'])
+                filename = generate_report_filename(meeting)
+                st.download_button(
+                    "📥 Download " + filename,
+                    data=buf.getvalue(),
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+                st.success(f"Report generated. Click Download above to save.")
+            except Exception as e:
+                st.error(f"Generation failed: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+    st.markdown("---")
+    
+    # Distribution status
+    st.markdown("##### Distribution")
+    if meeting['status'] == 'COMPLETED':
+        col1, col2 = st.columns(2)
+        if col1.button("📤 Mark as Published"):
+            sb = db.get_client()
+            sb.table('ts_mer_meetings').update({
+                'status': 'PUBLISHED',
+                'published_at': datetime.utcnow().isoformat()
+            }).eq('id', meeting['id']).execute()
+            st.cache_data.clear()
+            st.rerun()
+        col2.caption("Move to PUBLISHED state once report is reviewed by Sangeeta and distributed.")
+    elif meeting['status'] == 'PUBLISHED':
+        st.success(f"✅ Report published on {meeting.get('published_at', '')[:10]}")
+    else:
+        st.info(f"Mark meeting as COMPLETED first (from MEETING tab) to enable publishing.")
 
 
 # ════════════════════════════════════════════════════
 # MAIN ENTRY POINT — call from app.py
 # ════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════
+# DATA LOADERS FOR DELIVERY 3
+# ════════════════════════════════════════════════════
+
+def load_attendance(meeting_id):
+    """Not cached — for live editing."""
+    sb = db.get_client()
+    r = sb.table('ts_mer_attendance').select('*').eq('meeting_id', meeting_id).execute()
+    return r.data or []
+
+
+def load_decisions(meeting_id):
+    """Not cached — for live editing."""
+    sb = db.get_client()
+    r = sb.table('ts_mer_decisions').select('*').eq('meeting_id', meeting_id).order('captured_at', desc=True).execute()
+    return r.data or []
+
+
+# ════════════════════════════════════════════════════
+# NOTIFICATIONS
+# ════════════════════════════════════════════════════
+
+def render_notifications(meeting):
+    """Generate ready-to-paste notification messages for WhatsApp / email."""
+    status = meeting['status']
+    review_month = meeting['review_month']
+    year, month = map(int, review_month.split('-'))
+    month_name = date(year, month, 1).strftime('%B %Y')
+
+    if status == 'PREP_OPEN':
+        prep_close = meeting.get('prep_closes_at', '')[:10] if meeting.get('prep_closes_at') else 'TBD'
+        msg = f"""📅 *Monthly Engineering Review #{meeting['meeting_no']:02d}*
+
+Dear Discipline Leads,
+
+PREP is now open for reviewing *{month_name}* data.
+
+📝 *Action needed:* Log in to the GCC Timesheet App → MER tab → PREP
+🔗 https://gcc-eet-timesheet.streamlit.app
+⏰ *Deadline:* {prep_close}
+🗓 *Meeting:* {meeting.get('scheduled_date', 'TBD')}
+
+Each discipline lead, please fill your section:
+- Key activities completed
+- Project status updates
+- Concerns & critical items
+- Manpower / software needs
+- Proposed action items
+
+— HP (Dy Engineering Head, Chair of MER)"""
+
+    elif status == 'PREP_CLOSED':
+        msg = f"""📅 *MER #{meeting['meeting_no']:02d} — PREP Closed*
+
+PREP submissions for {month_name} review are now closed.
+
+Late submissions are still accepted but flagged.
+
+🗓 Meeting on {meeting.get('scheduled_date', 'TBD')}.
+
+— HP"""
+
+    elif status == 'COMPLETED' or status == 'PUBLISHED':
+        msg = f"""📅 *MER #{meeting['meeting_no']:02d} — Report Published*
+
+The Monthly Engineering Review report for {month_name} is now available.
+
+Download from app or check your email.
+
+🔗 https://gcc-eet-timesheet.streamlit.app → MER → Report
+
+— HP"""
+
+    else:
+        msg = f"Meeting is in {status} state — no automated message for this phase."
+
+    st.markdown("###### WhatsApp / Email message")
+    st.code(msg, language=None)
+    st.caption("Copy the message above and send via WhatsApp / Email to the engineering group.")
+
+
+# ════════════════════════════════════════════════════
+# SUPER ADMIN GRANT / REVOKE UI
+# ════════════════════════════════════════════════════
+
+def render_super_admin_panel(user):
+    """Visible only to OWNER (HP). Allows granting/revoking Super Admin status."""
+    if not user.get('is_owner'):
+        return
+
+    sb = db.get_client()
+    r = sb.table('ts_mer_super_admins').select('*').eq('is_active', True).execute()
+    current_admins = r.data or []
+    admin_member_ids = {a['member_id'] for a in current_admins}
+
+    st.markdown("##### Current Permissions")
+    members = db.get_members()
+    mem_lookup = {m['id']: m for m in members}
+
+    rows = []
+    for sa in current_admins:
+        mem = mem_lookup.get(sa['member_id'])
+        if mem:
+            rows.append({
+                'Name': mem['name'],
+                'Role': sa['role'],
+                'Granted on': (sa.get('granted_at') or '')[:10],
+            })
+    
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    
+    st.markdown("##### Grant Super Admin to a member")
+    eligible = [m for m in members if m['id'] not in admin_member_ids]
+    eligible_names = [m['name'] for m in eligible]
+    
+    if eligible_names:
+        col1, col2 = st.columns([3, 1])
+        selected_name = col1.selectbox(
+            "Select a member to grant Super Admin",
+            ['— Choose —'] + eligible_names,
+            key='grant_member_pick'
+        )
+        
+        if col2.button("➕ Grant", disabled=(selected_name == '— Choose —')):
+            # Confirmation
+            if not st.session_state.get('confirm_grant'):
+                st.session_state.confirm_grant = selected_name
+                st.warning(f"⚠ Are you sure you want to grant Super Admin to **{selected_name}**? Click 'Grant' again to confirm.")
+            else:
+                selected_member = next(m for m in members if m['name'] == st.session_state.confirm_grant)
+                # Update flag on member
+                sb.table('ts_members').update({'is_super_admin': True}).eq('id', selected_member['id']).execute()
+                # Insert audit log
+                sb.table('ts_mer_super_admins').insert({
+                    'member_id': selected_member['id'],
+                    'role': 'SUPER_ADMIN',
+                    'granted_by_id': user['id'],
+                    'is_active': True,
+                    'notes': f'Granted via UI by {user["name"]}',
+                }).execute()
+                st.session_state.confirm_grant = None
+                st.cache_data.clear()
+                st.success(f"✅ {selected_member['name']} is now a Super Admin")
+                st.rerun()
+    else:
+        st.caption("All eligible members are already Super Admins.")
+    
+    st.markdown("##### Revoke Super Admin")
+    revocable = [sa for sa in current_admins if sa['role'] != 'OWNER']
+    if revocable:
+        revoke_names = [mem_lookup[sa['member_id']]['name'] for sa in revocable if sa['member_id'] in mem_lookup]
+        col1, col2 = st.columns([3, 1])
+        revoke_name = col1.selectbox(
+            "Revoke from:",
+            ['— Choose —'] + revoke_names,
+            key='revoke_member_pick'
+        )
+        if col2.button("🗑 Revoke", disabled=(revoke_name == '— Choose —')):
+            if not st.session_state.get('confirm_revoke'):
+                st.session_state.confirm_revoke = revoke_name
+                st.warning(f"⚠ Are you sure you want to revoke Super Admin from **{revoke_name}**? Click 'Revoke' again to confirm.")
+            else:
+                revoke_member = next(m for m in members if m['name'] == st.session_state.confirm_revoke)
+                # Update flag
+                sb.table('ts_members').update({'is_super_admin': False}).eq('id', revoke_member['id']).execute()
+                # Mark audit log as revoked
+                sb.table('ts_mer_super_admins').update({
+                    'is_active': False,
+                    'revoked_at': datetime.utcnow().isoformat(),
+                    'revoked_by_id': user['id'],
+                }).eq('member_id', revoke_member['id']).eq('is_active', True).execute()
+                st.session_state.confirm_revoke = None
+                st.cache_data.clear()
+                st.success(f"✅ Super Admin revoked from {revoke_member['name']}")
+                st.rerun()
+    else:
+        st.caption("No revocable Super Admins (Owner cannot be revoked).")
+
+
+# ════════════════════════════════════════════════════
+# OVERVIEW UPGRADE — 12 discipline tabs
+# ════════════════════════════════════════════════════
+
+CAT_COLORS_MAP = {
+    'DESIGN':  '#0F6E56', 'REVIEW':  '#185FA5', 'COORD':   '#7F77DD',
+    'DOC':     '#BA7517', 'ADMIN':   '#888880', 'LEAVE':   '#5DCAA5',
+    'UNCLASS': '#A32D2D',
+}
+
+ACTIVITY_DESC_LOOKUP = {
+    'PRS-01': 'PFD Preparation', 'PRS-02': 'P&ID Development',
+    'PRS-04': 'Process Design Review', 'PRS-05': 'Heat & Material Balance Review',
+    'PRS-07': 'Process Calculations & Sizing', 'PRS-08': 'Process Specification & Datasheet',
+    'PRS-09': 'Equipment List & MR', 'PRS-10': 'Vendor Document Review',
+    'PRS-11': 'Process Meeting & Coordination',
+    'CIV-01': 'Civil Concept Design', 'CIV-02': 'Civil Drawing Review & Mark-up',
+    'CIV-03': 'Foundation / Structural Calc', 'CIV-04': 'Structural Spec & Datasheet',
+    'CIV-05': 'Civil Drawing Verification', 'CIV-06': 'Civil GA Review & Comments',
+    'CIV-07': 'Civil Bulk MTO / BoQ Check', 'CIV-08': 'Civil Vendor Coordination',
+    'CIV-09': 'Civil Documentation / MDR', 'CIV-10': 'Civil Engineering Meeting',
+    'CIV-11': 'Civil Site Coordination',
+    'ELEC-01': 'Single Line Diagram (SLD)', 'ELEC-02': 'Electrical Load List & Sizing',
+    'ELEC-04': 'Cable Sizing & Calc', 'ELEC-05': 'Electrical Drawing Review',
+    'ELEC-06': 'Electrical Specification Review', 'ELEC-07': 'Electrical Spec & Datasheet',
+    'ELEC-08': 'Electrical MTO / BoQ Check', 'ELEC-09': 'Electrical Vendor Offer Review',
+    'ELEC-10': 'Electrical Documentation / MDR', 'ELEC-11': 'Electrical Coordination Meeting',
+    'INST-01': 'Instrument Index & Datasheet', 'INST-02': 'Control System Architecture',
+    'INST-03': 'Instrument Sizing & Calc', 'INST-04': 'Instrument Drawing Review',
+    'INST-05': 'Instrument Specification Review',
+    'MS-01': 'Static Equipment Design', 'MS-02': 'Vessel / HX Sizing',
+    'MS-03': 'Static Equipment Drawing Review', 'MS-04': 'Static Equipment Spec Review',
+    'MECH-01': 'Mechanical Equipment Design', 'MECH-02': 'Mechanical Datasheet Preparation',
+    'MECH-04': 'Mechanical Drawing Review', 'MECH-06': 'Mechanical Vendor Coordination',
+    'MECH-07': 'Mechanical Calculation', 'MECH-08': 'Mechanical Specification Prep',
+    'MECH-09': 'Mechanical MTO Extraction', 'MECH-10': 'Mechanical Drawing Verification',
+    'MECH-11': 'Mechanical Documentation', 'MECH-12': 'Mechanical Coordination Meeting',
+    'MR-01': 'Rotary Equipment Design / Datasheet', 'MR-02': 'Rotary Vendor Offer Review',
+    'MR-03': 'Rotary Equipment Calc / Verification',
+    'PIP-01': 'Piping Layout Design', 'PIP-02': 'Piping MTO Extraction',
+    'PIP-03': 'Piping Isometric Preparation',
+    'HSE-03': 'HSE Review & Risk Assessment',
+    'DOC-01': 'Document Management & MDR',
+    'LEAVE': 'Leave', 'HOL': 'Public Holiday', 'HOLIDAY': 'Public Holiday',
+    'OTHERS': 'Other / Unspecified',
+    'Tool Box meeting': 'Tool Box Meeting',
+    'Idle Man Hours': 'Idle / Waiting',
+}
+
+
+def get_activity_description(activity_code):
+    """Return human-readable description for an activity code."""
+    a = str(activity_code or '').strip()
+    return ACTIVITY_DESC_LOOKUP.get(a, a if a else 'Unspecified')
+
+
+def render_discipline_dashboard(disc_name, members, entries_df, meeting):
+    """Render a single discipline's deep-dive dashboard (used inside the per-discipline tab)."""
+    # Filter to this discipline's data
+    disc_member_ids = {m['id'] for m in members if m.get('discipline') == disc_name}
+    excluded_uids = {m['id'] for m in members if m.get('excluded_from_productivity')}
+    
+    df_d = entries_df[entries_df['uid'].isin(disc_member_ids - excluded_uids)].copy()
+    
+    if len(df_d) == 0:
+        st.info(f"No timesheet data for {disc_name} in {meeting['review_month']}.")
+        return
+
+    df_d['Description'] = df_d['description'].fillna('').astype(str)
+    df_d['Category'] = df_d.apply(
+        lambda r: classify_activity(r['act'], r['Description']), axis=1
+    )
+
+    # ── KPIs ──
+    total_hrs = df_d['hrs'].sum()
+    n_members = df_d['uid'].nunique()
+    top_proj_g = df_d.groupby('proj')['hrs'].sum().sort_values(ascending=False)
+    top_proj = top_proj_g.index[0] if len(top_proj_g) else '-'
+    
+    cat_tot = df_d.groupby('Category')['hrs'].sum()
+    hv = sum(cat_tot.get(c, 0) for c in ['DESIGN', 'REVIEW', 'COORD'])
+    hv_pct = hv / total_hrs * 100 if total_hrs else 0
+    unclass = cat_tot.get('UNCLASS', 0)
+    unclass_pct = unclass / total_hrs * 100 if total_hrs else 0
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Hours", f"{total_hrs:,.0f}")
+    c2.metric("Members", n_members)
+    c3.metric("Top Project", top_proj, help=f"{top_proj_g.iloc[0]:.0f} hrs" if len(top_proj_g) else "")
+    c4.metric("High-Value", f"{hv_pct:.0f}%", help="Design + Review + Coord")
+    c5.metric("Visibility", f"{100-unclass_pct:.0f}%", help="100% - unclassified%",
+              delta_color="normal" if (100 - unclass_pct) >= 70 else "inverse")
+
+    # ── Category Mix Bar ──
+    st.markdown("**Category Mix**")
+    bar_html = '<div style="display:flex;height:24px;border-radius:4px;overflow:hidden;background:#eee;margin-bottom:12px;">'
+    for c in CAT_ORDER:
+        v = cat_tot.get(c, 0)
+        if v > 0:
+            pct = v / total_hrs * 100
+            bar_html += (
+                f'<div style="width:{pct:.0f}%;background:{CAT_COLORS_MAP[c]};'
+                f'color:white;font-size:11px;display:flex;align-items:center;'
+                f'justify-content:center;font-weight:500;" '
+                f'title="{CAT_LABEL[c]}: {int(v)}h">{CAT_LABEL[c]} {pct:.0f}%</div>'
+            )
+    bar_html += '</div>'
+    st.markdown(bar_html, unsafe_allow_html=True)
+
+    # ── Top Projects + Top Activities (side by side) ──
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        st.markdown("**Top Projects**")
+        proj_table = top_proj_g.head(5).reset_index()
+        proj_table.columns = ['Project', 'Hours']
+        proj_table['% of Total'] = (proj_table['Hours'] / total_hrs * 100).round(0).astype(int).astype(str) + '%'
+        proj_table['Hours'] = proj_table['Hours'].round(0).astype(int)
+        st.dataframe(proj_table, use_container_width=True, hide_index=True)
+    
+    with col_b:
+        st.markdown("**Top Activities** (descriptions, not codes)")
+        df_d['ActivityDesc'] = df_d['act'].apply(get_activity_description)
+        act_table = (df_d.groupby('ActivityDesc')
+                          .agg(Hours=('hrs', 'sum'),
+                               Category=('Category', 'first'),
+                               Members=('uid', 'nunique'))
+                          .reset_index()
+                          .sort_values('Hours', ascending=False)
+                          .head(5))
+        act_table['Hours'] = act_table['Hours'].round(0).astype(int)
+        st.dataframe(act_table, use_container_width=True, hide_index=True)
+
+    # ── Anomalies (names visible since this is the live app for leads/HP) ──
+    st.markdown("**Data Quality — Member Flags**")
+    flag_rows = []
+    for mid in disc_member_ids - excluded_uids:
+        mem = next((m for m in members if m['id'] == mid), None)
+        if not mem:
+            continue
+        sub = df_d[df_d['uid'] == mid]
+        m_hrs = sub['hrs'].sum()
+        if m_hrs == 0:
+            flag_rows.append({'Member': mem['name'], 'Issue': '🔴 0 hrs filled', 'Severity': 3})
+            continue
+        unclass_h = sub[sub['Category'] == 'UNCLASS']['hrs'].sum()
+        u_pct = unclass_h / m_hrs * 100
+        if u_pct > 50:
+            flag_rows.append({'Member': mem['name'], 'Issue': f'🔴 {u_pct:.0f}% on OTHERS', 'Severity': 3})
+        elif u_pct > 25:
+            flag_rows.append({'Member': mem['name'], 'Issue': f'🟡 {u_pct:.0f}% on OTHERS', 'Severity': 2})
+
+    if flag_rows:
+        df_flags = pd.DataFrame(flag_rows).sort_values('Severity', ascending=False).drop(columns=['Severity'])
+        st.dataframe(df_flags, use_container_width=True, hide_index=True)
+    else:
+        st.success(f"✅ All {n_members} members reporting cleanly")
+
+    # ── Commentary ──
+    profile_bits = []
+    design_pct = cat_tot.get('DESIGN', 0) / total_hrs * 100 if total_hrs else 0
+    review_pct = cat_tot.get('REVIEW', 0) / total_hrs * 100 if total_hrs else 0
+    coord_pct = cat_tot.get('COORD', 0) / total_hrs * 100 if total_hrs else 0
+    if design_pct > 40: profile_bits.append(f"design-heavy ({design_pct:.0f}%)")
+    if review_pct > 30: profile_bits.append(f"review-heavy ({review_pct:.0f}%)")
+    if coord_pct > 30: profile_bits.append(f"coordination-heavy ({coord_pct:.0f}%)")
+    if not profile_bits: profile_bits.append(f"balanced ({hv_pct:.0f}% high-value)")
+    
+    commentary = ', '.join(profile_bits)
+    if unclass_pct > 40:
+        commentary += f". ⚠ {unclass_pct:.0f}% unclassified — description nudge needed."
+    elif unclass_pct > 20:
+        commentary += f". {unclass_pct:.0f}% unclassified — description quality gap."
+    elif unclass_pct < 10:
+        commentary += f". Strong description discipline ({100-unclass_pct:.0f}% visibility)."
+
+    st.info(f"✦ **Commentary**: {commentary}")
+
+
+def render_overview_tab_v2(meeting, user):
+    """OVERVIEW tab v2 — Team summary at top + 12 discipline tabs."""
+    review_month = meeting['review_month']
+    year, month = map(int, review_month.split('-'))
+    month_name = date(year, month, 1).strftime('%B %Y')
+
+    st.markdown(
+        f"<div style='background:#F0F7FB;padding:10px 14px;border-radius:8px;"
+        f"font-size:12px;color:#185FA5;margin-bottom:12px;'>"
+        f"📅 <b>Reviewing:</b> {month_name} · "
+        f"<b>Meeting:</b> {meeting.get('scheduled_date', 'TBD')} · "
+        f"<b>Status:</b> {STATE_LABEL.get(meeting['status'], meeting['status'])}</div>",
+        unsafe_allow_html=True
+    )
+
+    # Load data
+    entries = load_entries_for_month(year, month)
+    members = db.get_members()
+    
+    if not entries:
+        st.warning(f"No timesheet data for {month_name} yet.")
+        return
+
+    df = pd.DataFrame(entries)
+    df['hrs'] = df['hrs'].astype(float)
+    df['description'] = df['description'].fillna('').astype(str)
+
+    # ── Team summary KPIs ──
+    excluded_uids = {m['id'] for m in members if m.get('excluded_from_productivity')}
+    df_eng = df[~df['uid'].isin(excluded_uids)]
+    
+    total_hrs = df_eng['hrs'].sum()
+    n_reporting = df_eng['uid'].nunique()
+    eng_members_total = sum(1 for m in members
+                            if m.get('dept') == 'Engineering' and m['id'] not in excluded_uids)
+    n_projects = df_eng['proj'].nunique()
+
+    df_eng = df_eng.copy()
+    df_eng['Category'] = df_eng.apply(
+        lambda r: classify_activity(r['act'], r['description']), axis=1
+    )
+    cat_totals = df_eng.groupby('Category')['hrs'].sum()
+    hv_pct = sum(cat_totals.get(c, 0) for c in ['DESIGN', 'REVIEW', 'COORD']) / total_hrs * 100 if total_hrs else 0
+    unclass_pct = cat_totals.get('UNCLASS', 0) / total_hrs * 100 if total_hrs else 0
+    leave_pct = cat_totals.get('LEAVE', 0) / total_hrs * 100 if total_hrs else 0
+
+    st.markdown("### 📊 Team Summary")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Total hours", f"{total_hrs:,.0f}")
+    c2.metric("Reporting", f"{n_reporting} / {eng_members_total}")
+    c3.metric("Projects", n_projects)
+    c4.metric("High-value", f"{hv_pct:.0f}%")
+    c5.metric("Unclassified", f"{unclass_pct:.0f}%", delta_color="inverse")
+    c6.metric("Leave", f"{leave_pct:.0f}%")
+
+    st.markdown("---")
+    st.markdown("### 🏢 Discipline-wise Dashboards")
+    st.caption("Click each tab to view that discipline's detailed dashboard")
+
+    # Order disciplines by hours descending
+    df_eng['discipline'] = df_eng['uid'].map(
+        lambda u: next((m.get('discipline', '-') for m in members if m['id'] == u), '-')
+    )
+    disc_order = (df_eng.groupby('discipline')['hrs'].sum()
+                       .sort_values(ascending=False)
+                       .index.tolist())
+
+    # Filter to disciplines with data (and exclude blank ones)
+    disc_order = [d for d in disc_order if d and d != '-' and d != 'Engineering Management']
+
+    if not disc_order:
+        st.warning("No discipline-level data to display.")
+        return
+
+    # Build tabs
+    disc_tabs = st.tabs([f"{d}" for d in disc_order])
+    
+    for tab, disc_name in zip(disc_tabs, disc_order):
+        with tab:
+            render_discipline_dashboard(disc_name, members, df, meeting)
+
 
 def render(user=None):
     """Top-level MER page renderer. Call from app.py main router."""
@@ -930,7 +1690,7 @@ def render(user=None):
             ["📊 Overview", "📝 PREP", "🗓 Meeting", "📄 Report"]
         )
         with tab_overview:
-            render_overview_tab(meeting, user)
+            render_overview_tab_v2(meeting, user)  # Upgraded for Delivery 3
         with tab_prep:
             render_prep_tab(meeting, user)
         with tab_meeting:
