@@ -624,6 +624,288 @@ def _build_closing(doc):
 # MAIN ENTRY POINT
 # ════════════════════════════════════════════════════
 
+
+
+# ════════════════════════════════════════════════════
+# NARRATIVE-AWARE SECTION BUILDERS (Meeting #04 alignment)
+# ════════════════════════════════════════════════════
+
+def _narrative_or_default(narrative, key, default=None):
+    """Read a value from meeting_narrative JSONB, or return default."""
+    if narrative and isinstance(narrative, dict):
+        return narrative.get(key, default)
+    return default
+
+
+def _build_project_status_v2(doc, meeting, entries_df, inputs, narrative):
+    """Project Status — uses canonical narrative if present, else PREP+timesheet."""
+    _add_heading1(doc, "2. Project Status — Key Updates from Each Project")
+    
+    project_table = _narrative_or_default(narrative, 'project_status_table')
+    
+    if project_table and isinstance(project_table, list) and len(project_table) > 0:
+        # Use the canonical narrative table
+        table = doc.add_table(rows=len(project_table) + 1, cols=5)
+        headers = ['Sl.', 'Project Name', 'Project Status (Phase)', 'Present Status', 'Activities / Concerns']
+        for i, h in enumerate(headers):
+            _header_cell(table.rows[0].cells[i], h)
+        
+        for idx, p in enumerate(project_table, 1):
+            row = table.rows[idx]
+            fill = ROW_ALT if idx % 2 == 0 else None
+            _data_cell(row.cells[0], str(p.get('sl', idx)), align='center', fill=fill)
+            _data_cell(row.cells[1], p.get('project', ''), bold=True, fill=fill)
+            _data_cell(row.cells[2], p.get('phase', ''), fill=fill)
+            _data_cell(row.cells[3], p.get('present_status', ''), fill=fill)
+            _data_cell(row.cells[4], p.get('activities', ''), fill=fill)
+        return
+    
+    # Fallback: original behaviour
+    _add_para(doc, "Aggregated from discipline lead inputs · Hours from timesheet",
+              size=9, color=GREY)
+    _build_project_status(doc, meeting, entries_df, inputs)
+
+
+def _build_misc_activities(doc, narrative):
+    """Section 3: Miscellaneous Activities."""
+    items = _narrative_or_default(narrative, 'misc_activities')
+    if not items:
+        return  # skip section entirely if no content
+    _add_heading1(doc, "3. Miscellaneous Activities")
+    for it in items:
+        _add_bullet(doc, it)
+
+
+def _build_coordination_v2(doc, narrative, inputs):
+    """Section 4: Major Issues & Interdisciplinary Coordination."""
+    points = _narrative_or_default(narrative, 'coordination_points')
+    _add_heading1(doc, "4. Major Issues & Interdisciplinary Coordination Points")
+    if points:
+        for p in points:
+            _add_bullet(doc, p)
+    else:
+        # Fallback to PREP concerns
+        concerns_by_disc = {}
+        for inp in inputs:
+            if inp.get('concerns'):
+                concerns_by_disc[inp.get('discipline', '?')] = inp['concerns']
+        if concerns_by_disc:
+            for disc, c in concerns_by_disc.items():
+                p = doc.add_paragraph()
+                _add_run(p, f"{disc}: ", size=10, bold=True)
+                _add_run(p, c, size=10)
+        else:
+            _add_para(doc, "(Will be populated from PREP submissions and meeting discussions.)",
+                      size=10, color=GREY)
+
+
+def _build_future_projection(doc, narrative):
+    """Section 5: Future Projection."""
+    points = _narrative_or_default(narrative, 'future_projection')
+    if not points:
+        return
+    _add_heading1(doc, "5. Future Projection of Projects Status")
+    for p in points:
+        _add_bullet(doc, p)
+
+
+def _build_manhours_v2(doc, entries_df, members, narrative):
+    """Section 6: Manhours Booking — with narrative intro."""
+    _add_heading1(doc, "6. Manhours Booking")
+    
+    narr_text = _narrative_or_default(
+        narrative, 'manhours_narrative',
+        "Manhours recorded diligently — essential for project claims. Demonstrates GCC Team value."
+    )
+    _add_para(doc, narr_text, size=10)
+    
+    # Reuse existing manhours table builder
+    if len(entries_df) == 0:
+        _add_para(doc, "No data.", size=10, color=GREY)
+        return
+    _build_manhours_table_only(doc, entries_df, members)
+
+
+def _build_manhours_table_only(doc, entries_df, members):
+    """Just the manhours table (no heading, no intro)."""
+    mem_lookup = {m['id']: m for m in members}
+    entries_df = entries_df.copy()
+    entries_df['discipline'] = entries_df['uid'].map(
+        lambda u: mem_lookup.get(u, {}).get('discipline', '-')
+    )
+
+    excluded_uids = {m['id'] for m in members if m.get('excluded_from_productivity')}
+    df_eng = entries_df[~entries_df['uid'].isin(excluded_uids)]
+    df_mgmt = entries_df[entries_df['uid'].isin(excluded_uids)]
+
+    disc_summary = (df_eng.groupby('discipline')
+                          .agg(Hours=('hrs', 'sum'), Members=('uid', 'nunique'))
+                          .reset_index()
+                          .sort_values('Hours', ascending=False))
+
+    total_eng_hrs = df_eng['hrs'].sum()
+    mgmt_hrs = df_mgmt['hrs'].sum()
+    grand_total = total_eng_hrs + mgmt_hrs
+    n_mgmt_members = df_mgmt['uid'].nunique()
+
+    n_rows = len(disc_summary) + 3
+    table = doc.add_table(rows=n_rows, cols=4)
+    headers = ['Discipline', 'Members', 'Hours', '% of Total']
+    for i, h in enumerate(headers):
+        _header_cell(table.rows[0].cells[i], h)
+
+    for idx, (_, r) in enumerate(disc_summary.iterrows(), 1):
+        row = table.rows[idx]
+        pct = r['Hours'] / grand_total * 100 if grand_total else 0
+        bars = '━' * round(pct / 2)
+        fill = ROW_ALT if idx % 2 == 0 else None
+        _data_cell(row.cells[0], r['discipline'], bold=True, fill=fill)
+        _data_cell(row.cells[1], str(int(r['Members'])), align='center', fill=fill)
+        _data_cell(row.cells[2], f"{r['Hours']:.0f}", align='right', bold=True, fill=fill)
+        _data_cell(row.cells[3], f"{pct:.0f}%  {bars}", fill=fill)
+
+    mgmt_row = table.rows[len(disc_summary) + 1]
+    _data_cell(mgmt_row.cells[0], "Engineering Management (HP+Sangeeta — excluded)",
+               bold=True, fill=LIGHT_BG)
+    _data_cell(mgmt_row.cells[1], str(n_mgmt_members), align='center', fill=LIGHT_BG)
+    _data_cell(mgmt_row.cells[2], f"{mgmt_hrs:.0f}", align='right', bold=True, fill=LIGHT_BG)
+    _data_cell(mgmt_row.cells[3], "Excluded from productivity scoring", fill=LIGHT_BG)
+
+    total_row = table.rows[-1]
+    for i in range(4):
+        _shade_cell(total_row.cells[i], "1F4E78")
+    n_total = df_eng['uid'].nunique() + n_mgmt_members
+    _data_cell(total_row.cells[0], "TOTAL", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    _data_cell(total_row.cells[1], str(n_total), align='center', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    _data_cell(total_row.cells[2], f"{grand_total:.0f}", align='right', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    _data_cell(total_row.cells[3], "100%", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+
+
+def _build_assurance(doc, narrative):
+    """Section 8: Assurance."""
+    assurance = _narrative_or_default(narrative, 'assurance_status')
+    if not assurance:
+        return
+    _add_heading1(doc, "8. Assurance")
+    if isinstance(assurance, dict):
+        if assurance.get('paragraph_1'):
+            _add_para(doc, assurance['paragraph_1'], size=10)
+        if assurance.get('paragraph_2'):
+            _add_para(doc, assurance['paragraph_2'], size=10)
+        if assurance.get('status'):
+            p = doc.add_paragraph()
+            _add_run(p, "Status: ", size=10, bold=True, color=NAVY)
+            _add_run(p, assurance['status'], size=10)
+    elif isinstance(assurance, str):
+        _add_para(doc, assurance, size=10)
+
+
+def _build_critical_decisions(doc, narrative, inputs):
+    """Section 9: Risks, Changes & Critical Decisions Needed."""
+    points = _narrative_or_default(narrative, 'critical_decisions')
+    _add_heading1(doc, "9. Risks, Changes & Critical Decisions Needed")
+    if points:
+        for p in points:
+            _add_bullet(doc, p)
+        return
+    
+    # Fallback to PREP critical_items
+    has_items = False
+    for inp in inputs:
+        if inp.get('critical_items'):
+            has_items = True
+            p = doc.add_paragraph()
+            _add_run(p, f"From {inp.get('discipline', '?')}:", size=11, bold=True, color=NAVY)
+            doc.add_paragraph(inp['critical_items'])
+    if not has_items:
+        _add_para(doc, "(No critical items submitted yet.)", size=10, color=GREY)
+
+
+def _build_suggestions(doc, narrative):
+    """Section 10: Suggestions."""
+    points = _narrative_or_default(narrative, 'suggestions')
+    if not points:
+        return
+    _add_heading1(doc, "10. Suggestions")
+    for p in points:
+        _add_bullet(doc, p)
+
+
+def _build_software_training(doc, narrative, inputs):
+    """Section 11: Software Training Sessions."""
+    st_data = _narrative_or_default(narrative, 'software_training')
+    _add_heading1(doc, "11. Software Training Sessions")
+    
+    if st_data and isinstance(st_data, dict):
+        # Narrative bullets first
+        if st_data.get('narrative_points'):
+            for n in st_data['narrative_points']:
+                _add_bullet(doc, n)
+        # Training table
+        tt = st_data.get('training_table')
+        if tt:
+            _add_para(doc, "Discipline plans need to be established.", size=10, bold=True)
+            table = doc.add_table(rows=len(tt) + 1, cols=4)
+            headers = ['Sl.', 'Training Description', 'No of Team Members Participated', 'Status']
+            for i, h in enumerate(headers):
+                _header_cell(table.rows[0].cells[i], h)
+            for idx, t in enumerate(tt, 1):
+                row = table.rows[idx]
+                fill = ROW_ALT if idx % 2 == 0 else None
+                _data_cell(row.cells[0], str(t.get('sl', idx)), align='center', fill=fill)
+                _data_cell(row.cells[1], t.get('training', ''), bold=True, fill=fill)
+                _data_cell(row.cells[2], t.get('participants', ''), align='center', fill=fill)
+                status = t.get('status', '')
+                color = GREEN if status == 'Conducted' else (AMBER if status == 'Under progress' else GREY)
+                _data_cell(row.cells[3], status, color=color, bold=True, fill=fill)
+        return
+    
+    # Fallback to PREP
+    needs_by_disc = {}
+    for inp in inputs:
+        if inp.get('software_needs'):
+            needs_by_disc[inp.get('discipline', '?')] = inp['software_needs']
+    if needs_by_disc:
+        for disc, c in needs_by_disc.items():
+            p = doc.add_paragraph()
+            _add_run(p, f"{disc}: ", size=10, bold=True)
+            _add_run(p, c, size=10)
+    else:
+        _add_para(doc, "(Will be populated from PREP submissions.)", size=10, color=GREY)
+
+
+def _build_what_we_can_do(doc, narrative):
+    """Section 12: What We Can Do Further."""
+    items = _narrative_or_default(narrative, 'what_we_can_do_further')
+    if not items:
+        return
+    _add_heading1(doc, "12. What We Can Do Further — How We Make the Difference")
+    for it in items:
+        if isinstance(it, dict):
+            p = doc.add_paragraph(style='List Bullet')
+            _add_run(p, it.get('point', ''), size=10)
+            if it.get('update'):
+                p2 = doc.add_paragraph()
+                p2.paragraph_format.left_indent = Inches(0.5)
+                _add_run(p2, "Update: ", size=10, bold=True, color=ACCENT)
+                _add_run(p2, it['update'], size=10, italic=True)
+        else:
+            _add_bullet(doc, str(it))
+
+
+def _build_additional_points(doc, narrative):
+    """Section 13: Any Other Additional Points."""
+    points = _narrative_or_default(narrative, 'additional_points')
+    if not points:
+        return
+    _add_heading1(doc, "13. Any Other Additional Points")
+    if isinstance(points, list):
+        for p in points:
+            _add_bullet(doc, p)
+    else:
+        _add_para(doc, str(points), size=10)
+
+
 def generate_report(meeting_id):
     """
     Generate the 6-page A4 MER report DOCX for the given meeting.
@@ -672,16 +954,27 @@ def generate_report(meeting_id):
              f"Generated {datetime.utcnow().strftime('%d-%b-%Y %H:%M')} UTC",
              size=9, color=GREY)
 
-    # Build all sections
-    _build_cover(doc, meeting)
-    _build_key_highlights(doc, meeting, df, members)
-    _build_project_status(doc, meeting, df, inputs)
-    _build_manhours(doc, df, members)
-    _build_engineering_strength(doc, members)
-    _build_critical_items(doc, inputs)
+    # Get narrative override if present (used for #04 and any meeting with canonical content)
+    narrative = meeting.get('meeting_narrative')
+    
+    # Build all sections — aligned with Meeting #04 canonical Word doc structure
+    _build_cover(doc, meeting)                                  # Cover/metadata
+    _build_key_highlights(doc, meeting, df, members)            # 1. Key Highlights
+    _build_project_status_v2(doc, meeting, df, inputs, narrative)  # 2. Project Status
+    _build_misc_activities(doc, narrative)                      # 3. Misc Activities
+    _build_coordination_v2(doc, narrative, inputs)              # 4. Coordination
+    _build_future_projection(doc, narrative)                    # 5. Future Projection
+    _build_manhours_v2(doc, df, members, narrative)             # 6. Manhours
+    _build_engineering_strength(doc, members)                   # 7. Engineering Strength
+    _build_assurance(doc, narrative)                            # 8. Assurance
+    _build_critical_decisions(doc, narrative, inputs)           # 9. Critical Decisions
+    _build_suggestions(doc, narrative)                          # 10. Suggestions
+    _build_software_training(doc, narrative, inputs)            # 11. Software Training
+    _build_what_we_can_do(doc, narrative)                       # 12. What We Can Do Further
+    _build_additional_points(doc, narrative)                    # 13. Any Other Additional Points
+    
+    # Append: actions, decisions (current month operational items)
     _build_actions(doc, actions)
-    _build_coordination(doc, inputs)
-    _build_software_training(doc, inputs)
     _build_decisions(doc, decisions)
     _build_closing(doc)
 
