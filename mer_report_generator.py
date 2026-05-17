@@ -1,35 +1,17 @@
 """
 mer_report_generator.py
 =======================
-Auto-generates the 6-page A4 Monthly Engineering Review (MER) DOCX report
-from live data in Supabase.
+Auto-generates the Monthly Engineering Review (MER) DOCX report.
 
-Same format as the canonical Meeting #04 report template, but populated
-with real data for any selected meeting.
-
-Sections produced (all A4 portrait):
-  1. Cover + meeting metadata
-  2. Key Highlights (timesheet KPIs)
-  3. Project Status Table (from PREP submissions + timesheet)
-  4. Manhours Booking (discipline-wise from timesheet)
-  5. Engineering Strength (from members table)
-  6. Critical Items (aggregated from PREP)
-  7. Open Action Items (from ts_mer_actions)
-  8. Interdisciplinary Coordination
-  9. Software & Training
- 10. Future / Closing notes
-
-Usage:
-  from mer_report_generator import generate_report
-  buffer = generate_report(meeting_id)
-  # buffer is BytesIO containing a .docx file
+Structure mirrors the canonical Meeting #04 Word document.
+Only includes sections that have content - empty sections are skipped.
 """
 from io import BytesIO
 from datetime import date, datetime
 import pandas as pd
 
 from docx import Document
-from docx.shared import Pt, Inches, Cm, RGBColor
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
@@ -38,9 +20,6 @@ from docx.oxml import OxmlElement
 import db
 
 
-# ════════════════════════════════════════════════════
-# COLORS  (matching the canonical template)
-# ════════════════════════════════════════════════════
 NAVY = RGBColor(0x1F, 0x4E, 0x78)
 ACCENT = RGBColor(0x2E, 0x75, 0xB6)
 LIGHT_BG = "F2F7FB"
@@ -52,12 +31,7 @@ GREEN = RGBColor(0x0F, 0x6E, 0x56)
 GREY = RGBColor(0x59, 0x59, 0x59)
 
 
-# ════════════════════════════════════════════════════
-# HELPERS
-# ════════════════════════════════════════════════════
-
 def _shade_cell(cell, color_hex):
-    """Add shading to a table cell."""
     tc_pr = cell._tc.get_or_add_tcPr()
     shd = OxmlElement('w:shd')
     shd.set(qn('w:val'), 'clear')
@@ -66,67 +40,54 @@ def _shade_cell(cell, color_hex):
     tc_pr.append(shd)
 
 
-def _add_run(para, text, font="Calibri", size=11, bold=False, color=None, italic=False):
-    """Add a styled text run to a paragraph."""
-    run = para.add_run(text)
-    run.font.name = font
-    run.font.size = Pt(size)
-    run.bold = bold
-    run.italic = italic
+def _run(para, text, size=11, bold=False, color=None, italic=False):
+    r = para.add_run(text or '')
+    r.font.name = 'Calibri'
+    r.font.size = Pt(size)
+    r.bold = bold
+    r.italic = italic
     if color:
-        run.font.color.rgb = color
-    return run
+        r.font.color.rgb = color
+    return r
 
 
-def _add_heading1(doc, text):
+def _h1(doc, text):
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(14)
     p.paragraph_format.space_after = Pt(8)
-    _add_run(p, text, size=16, bold=True, color=NAVY)
-    # Bottom border
+    _run(p, text, size=15, bold=True, color=NAVY)
     pPr = p._p.get_or_add_pPr()
     pBdr = OxmlElement('w:pBdr')
     bottom = OxmlElement('w:bottom')
     bottom.set(qn('w:val'), 'single')
-    bottom.set(qn('w:sz'), '8')
+    bottom.set(qn('w:sz'), '6')
     bottom.set(qn('w:color'), '2E75B6')
     pBdr.append(bottom)
     pPr.append(pBdr)
     return p
 
 
-def _add_para(doc, text, size=11, bold=False, color=None):
+def _para(doc, text='', size=10, bold=False, color=None, italic=False):
     p = doc.add_paragraph()
-    _add_run(p, text, size=size, bold=bold, color=color)
+    if text:
+        _run(p, text, size=size, bold=bold, color=color, italic=italic)
     return p
 
 
-def _add_bullet(doc, text, size=11):
+def _bullet(doc, text, size=10):
     p = doc.add_paragraph(style='List Bullet')
-    _add_run(p, text, size=size)
+    _run(p, text, size=size)
     return p
-
-
-def _make_table(doc, n_rows, n_cols, col_widths_inches=None):
-    table = doc.add_table(rows=n_rows, cols=n_cols)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    if col_widths_inches:
-        for row in table.rows:
-            for i, cell in enumerate(row.cells):
-                if i < len(col_widths_inches):
-                    cell.width = Inches(col_widths_inches[i])
-    return table
 
 
 def _header_cell(cell, text):
-    """Style as table header."""
     _shade_cell(cell, HEADER_BG)
     p = cell.paragraphs[0]
-    _add_run(p, text, size=10, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    _run(p, text, size=10, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
     cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
 
 
-def _data_cell(cell, text, bold=False, color=None, align=None, size=10, fill=None):
+def _data_cell(cell, text, bold=False, color=None, align=None, size=10, fill=None, italic=False):
     if fill:
         _shade_cell(cell, fill)
     p = cell.paragraphs[0]
@@ -134,14 +95,11 @@ def _data_cell(cell, text, bold=False, color=None, align=None, size=10, fill=Non
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     elif align == 'center':
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _add_run(p, text or '', size=size, bold=bold, color=color)
+    _run(p, text or '', size=size, bold=bold, color=color, italic=italic)
     cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
 
 
-# ════════════════════════════════════════════════════
-# DATA LOADERS
-# ════════════════════════════════════════════════════
-
+# ── Loaders ──
 def _load_meeting(meeting_id):
     sb = db.get_client()
     r = sb.table('ts_mer_meetings').select('*').eq('id', meeting_id).execute()
@@ -154,502 +112,93 @@ def _load_inputs(meeting_id):
     return r.data or []
 
 
-def _load_actions(include_closed=False):
+def _load_actions():
     sb = db.get_client()
-    statuses = ['OPEN', 'IN_PROGRESS'] if not include_closed else ['OPEN', 'IN_PROGRESS', 'CLOSED']
-    r = sb.table('ts_mer_actions').select('*').in_('status', statuses).order('due_date').execute()
-    return r.data or []
-
-
-def _load_decisions(meeting_id):
-    sb = db.get_client()
-    r = sb.table('ts_mer_decisions').select('*').eq('meeting_id', meeting_id).execute()
-    return r.data or []
-
-
-def _load_attendance(meeting_id):
-    sb = db.get_client()
-    r = sb.table('ts_mer_attendance').select('*').eq('meeting_id', meeting_id).execute()
+    r = sb.table('ts_mer_actions').select('*').in_('status', ['OPEN', 'IN_PROGRESS']).order('due_date').execute()
     return r.data or []
 
 
 def _load_entries_for_month(year, month):
     sb = db.get_client()
     start = date(year, month, 1).isoformat()
-    if month == 12:
-        end = date(year + 1, 1, 1).isoformat()
-    else:
-        end = date(year, month + 1, 1).isoformat()
-    all_rows = []
+    end = date(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1).isoformat()
+    out = []
     offset = 0
     while True:
-        r = (sb.table('ts_entries')
-               .select('*')
-               .gte('entry_date', start)
-               .lt('entry_date', end)
-               .order('entry_date')
-               .order('id')
-               .range(offset, offset + 999)
-               .execute())
+        r = (sb.table('ts_entries').select('*')
+               .gte('entry_date', start).lt('entry_date', end)
+               .order('entry_date').order('id')
+               .range(offset, offset + 999).execute())
         batch = r.data or []
-        all_rows.extend(batch)
+        out.extend(batch)
         if len(batch) < 1000:
             break
         offset += 1000
-    return all_rows
+    return out
 
 
-# ════════════════════════════════════════════════════
-# REPORT BUILDER SECTIONS
-# ════════════════════════════════════════════════════
-
-def _build_cover(doc, meeting):
-    """Add title page + meeting metadata table."""
-    review_month = meeting['review_month']
-    year, month = map(int, review_month.split('-'))
-    month_name = date(year, month, 1).strftime('%B %Y')
-    # Last day of the review month
-    if month < 12:
-        last_day_actual = date(year, month + 1, 1) - pd.Timedelta(days=1)
-        last_day_actual = last_day_actual.date() if hasattr(last_day_actual, 'date') else last_day_actual
-    else:
-        last_day_actual = date(year, 12, 31)
-
-    # Title
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.space_before = Pt(20)
-    _add_run(p, "GCC ENGINEERING", size=22, bold=True, color=NAVY)
-
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _add_run(p, "Monthly Review Meeting — Minutes & Action Tracker", size=14, color=GREY)
-
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.space_after = Pt(16)
-    _add_run(p, f"Meeting #{meeting['meeting_no']:02d}  ·  Reviewing {month_name}",
-             size=18, bold=True, color=ACCENT)
-
-    # Metadata table
-    table = doc.add_table(rows=5, cols=4)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.autofit = True
-
-    cells = [
-        ("Meeting:", "GCC Engineering Monthly Review",
-         "Meeting No:", f"{meeting['meeting_no']:02d}"),
-        ("Reviewing:", f"{month_name} (data locked {last_day_actual.strftime('%d-%b-%Y')})",
-         "Held on:", meeting.get('scheduled_date', 'TBD') or 'TBD'),
-        ("Location:", "GCC Arioli, Mumbai",
-         "Status:", meeting.get('status', 'DRAFT')),
-        ("Chair / Presenter:", meeting.get('chair', 'Hariprakash Pandey'),
-         "Reviewer:", meeting.get('reviewer', 'Sangeeta Salvi')),
-        ("Attendees:", "", "", ""),
-    ]
-
-    for i, row_data in enumerate(cells):
-        row = table.rows[i]
-        if i < 4:
-            for j, txt in enumerate(row_data):
-                bold = (j % 2 == 0)
-                fill = LIGHT_BG if bold else None
-                color = NAVY if (i == 0 and j == 3) else None
-                _data_cell(row.cells[j], txt, bold=bold, fill=fill, color=color, size=10)
-        else:
-            # Attendees row spans cols 1-3
-            _data_cell(row.cells[0], "Attendees:", bold=True, fill=LIGHT_BG, size=10)
-            # Merge cells 1,2,3
-            merged = row.cells[1].merge(row.cells[3])
-            attendance = _load_attendance(meeting['id'])
-            present_count = sum(1 for a in attendance if a.get('status') == 'PRESENT')
-            if attendance:
-                _data_cell(merged, f"{present_count} of {len(attendance)} attended", size=10)
-            else:
-                _data_cell(merged, "Engineering Team (attendance recorded in app)", size=10)
-
-    doc.add_paragraph()
-
-
-def _build_key_highlights(doc, meeting, entries_df, members):
-    _add_heading1(doc, "1. Key Highlights")
-    _add_para(doc, f"Auto-generated from timesheet · data locked end of {meeting['review_month']}",
-              size=9, color=GREY)
-
-    if len(entries_df) == 0:
-        _add_para(doc, "No timesheet entries for this period.")
-        return
-
-    excluded_uids = {m['id'] for m in members if m.get('excluded_from_productivity')}
-    df_eng = entries_df[~entries_df['uid'].isin(excluded_uids)]
-
-    total_hrs = df_eng['hrs'].sum()
-    n_reporting = df_eng['uid'].nunique()
-    eng_total = sum(1 for m in members
-                    if m.get('dept') == 'Engineering' and m['id'] not in excluded_uids)
-    n_projects = df_eng['proj'].nunique()
-
-    top_proj_g = df_eng.groupby('proj')['hrs'].sum().sort_values(ascending=False)
-    top_proj = top_proj_g.index[0] if len(top_proj_g) else '-'
-    top_proj_hrs = top_proj_g.iloc[0] if len(top_proj_g) else 0
-    top_proj_pct = top_proj_hrs / total_hrs * 100 if total_hrs else 0
-
-    # 3-column KPI table
-    table = doc.add_table(rows=1, cols=3)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-
-    kpis = [
-        ("TOTAL HOURS BOOKED", f"{total_hrs:,.0f}",
-         f"by {n_reporting} of {eng_total} Engineering team ({n_reporting/max(eng_total,1)*100:.0f}%)"),
-        ("PROJECTS ACTIVE", str(n_projects), "plus enabling work / overheads"),
-        ("TOP PROJECT (by hrs)", str(top_proj), f"{top_proj_hrs:.0f} hrs · {top_proj_pct:.0f}% of total"),
-    ]
-
-    for i, (label, value, foot) in enumerate(kpis):
-        cell = table.rows[0].cells[i]
-        _shade_cell(cell, LIGHT_BG)
-        cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-
-        p = cell.paragraphs[0]
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _add_run(p, label, size=8, color=GREY)
-
-        p = cell.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _add_run(p, value, size=20, bold=True, color=NAVY)
-
-        p = cell.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _add_run(p, foot, size=9, color=GREY)
-
-    doc.add_paragraph()
-
-
-def _build_project_status(doc, meeting, entries_df, inputs):
-    _add_heading1(doc, "2. Project Status — Key Updates")
-    _add_para(doc, "Aggregated from discipline lead inputs · Hours from timesheet",
-              size=9, color=GREY)
-
-    # Hours by project from timesheet
-    if len(entries_df):
-        proj_hours = entries_df.groupby('proj')['hrs'].sum().to_dict()
-    else:
-        proj_hours = {}
-
-    # Project status from PREP submissions (JSONB)
-    proj_statuses = {}
-    for inp in inputs:
-        ps = inp.get('project_status') or []
-        if isinstance(ps, list):
-            for p in ps:
-                pname = (p.get('project') or '').strip()
-                if pname:
-                    if pname not in proj_statuses:
-                        proj_statuses[pname] = []
-                    proj_statuses[pname].append({
-                        'phase': p.get('phase', ''),
-                        'pct': p.get('pct', ''),
-                        'status': p.get('status', ''),
-                        'discipline': inp.get('discipline', ''),
-                    })
-
-    # Union of all projects
-    all_projects = set(proj_hours.keys()) | set(proj_statuses.keys())
-    # Sort by hours descending
-    sorted_projects = sorted(all_projects,
-                             key=lambda p: -proj_hours.get(p, 0))
-
-    if not sorted_projects:
-        _add_para(doc, "No projects with activity this month.")
-        return
-
-    table = doc.add_table(rows=len(sorted_projects) + 1, cols=5)
-    headers = ['Sl.', 'Project', 'Phase', 'Apr Hrs', 'Status / Activities']
-    for i, h in enumerate(headers):
-        _header_cell(table.rows[0].cells[i], h)
-
-    for idx, pname in enumerate(sorted_projects, 1):
-        row = table.rows[idx]
-        hours = proj_hours.get(pname, 0)
-        statuses = proj_statuses.get(pname, [])
-        phase = statuses[0]['phase'] if statuses else ''
-        status_combined = ' / '.join(s['status'] for s in statuses if s.get('status')) if statuses else '— No PREP input yet —'
-
-        fill = ROW_ALT if idx % 2 == 0 else None
-        _data_cell(row.cells[0], str(idx), align='center', fill=fill)
-        _data_cell(row.cells[1], pname, bold=True, fill=fill)
-        _data_cell(row.cells[2], phase or '—', fill=fill)
-        _data_cell(row.cells[3], f"{hours:.0f}" if hours else '—', align='right', bold=True, fill=fill)
-        _data_cell(row.cells[4], status_combined[:300], fill=fill)
-
-
-def _build_manhours(doc, entries_df, members):
-    _add_heading1(doc, "3. Manhours Booking — Discipline-wise")
-    _add_para(doc,
-              "Manhours recorded diligently — essential for project claims. Demonstrates GCC Team value.",
-              size=10)
-
-    if len(entries_df) == 0:
-        _add_para(doc, "No data.")
-        return
-
-    # Map uid → discipline
-    mem_lookup = {m['id']: m for m in members}
-    entries_df = entries_df.copy()
-    entries_df['discipline'] = entries_df['uid'].map(
-        lambda u: mem_lookup.get(u, {}).get('discipline', '-')
-    )
-
-    # Group
-    excluded_uids = {m['id'] for m in members if m.get('excluded_from_productivity')}
-    df_eng = entries_df[~entries_df['uid'].isin(excluded_uids)]
-    df_mgmt = entries_df[entries_df['uid'].isin(excluded_uids)]
-
-    disc_summary = (df_eng.groupby('discipline')
-                          .agg(Hours=('hrs', 'sum'), Members=('uid', 'nunique'))
-                          .reset_index()
-                          .sort_values('Hours', ascending=False))
-
-    total_eng_hrs = df_eng['hrs'].sum()
-    mgmt_hrs = df_mgmt['hrs'].sum()
-    grand_total = total_eng_hrs + mgmt_hrs
-
-    n_rows = len(disc_summary) + 3  # + management row + total row + header
-    table = doc.add_table(rows=n_rows, cols=4)
-    headers = ['Discipline', 'Members', 'Hours', '% of Total']
-    for i, h in enumerate(headers):
-        _header_cell(table.rows[0].cells[i], h)
-
-    for idx, (_, r) in enumerate(disc_summary.iterrows(), 1):
-        row = table.rows[idx]
-        pct = r['Hours'] / grand_total * 100 if grand_total else 0
-        bars = '━' * round(pct / 2)
-        fill = ROW_ALT if idx % 2 == 0 else None
-        _data_cell(row.cells[0], r['discipline'], bold=True, fill=fill)
-        _data_cell(row.cells[1], str(int(r['Members'])), align='center', fill=fill)
-        _data_cell(row.cells[2], f"{r['Hours']:.0f}", align='right', bold=True, fill=fill)
-        _data_cell(row.cells[3], f"{pct:.0f}%  {bars}", fill=fill)
-
-    # Management row (excluded from productivity)
-    mgmt_row = table.rows[len(disc_summary) + 1]
-    n_mgmt_members = df_mgmt['uid'].nunique()
-    _data_cell(mgmt_row.cells[0], "Engineering Management (HP+Sangeeta — excluded)",
-               bold=True, fill=LIGHT_BG)
-    _data_cell(mgmt_row.cells[1], str(n_mgmt_members), align='center', fill=LIGHT_BG)
-    _data_cell(mgmt_row.cells[2], f"{mgmt_hrs:.0f}", align='right', bold=True, fill=LIGHT_BG)
-    _data_cell(mgmt_row.cells[3], "Excluded from productivity scoring", fill=LIGHT_BG)
-
-    # Total row
-    total_row = table.rows[-1]
-    for i in range(4):
-        _shade_cell(total_row.cells[i], "1F4E78")
-    n_total = df_eng['uid'].nunique() + n_mgmt_members
-    _data_cell(total_row.cells[0], "TOTAL", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
-    _data_cell(total_row.cells[1], str(n_total), align='center', bold=True,
-               color=RGBColor(0xFF, 0xFF, 0xFF))
-    _data_cell(total_row.cells[2], f"{grand_total:.0f}", align='right', bold=True,
-               color=RGBColor(0xFF, 0xFF, 0xFF))
-    _data_cell(total_row.cells[3], "100%", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
-
-
-def _build_engineering_strength(doc, members):
-    _add_heading1(doc, "4. Engineering Strength — Discipline-wise")
-
-    eng_members = [m for m in members if m.get('dept') == 'Engineering']
-    disc_counts = {}
-    for m in eng_members:
-        d = m.get('discipline', '-') or '-'
-        disc_counts[d] = disc_counts.get(d, 0) + 1
-
-    total_strength = sum(disc_counts.values())
-    _add_para(doc, f"Total Engineering strength: {total_strength} members.", size=10)
-
-    rows_data = []
-    for d, count in sorted(disc_counts.items(), key=lambda x: -x[1]):
-        lead = next(
-            (m['name'] for m in members
-             if m.get('is_discipline_lead') and m.get('leads_discipline') == d),
-            '—'
-        )
-        rows_data.append((d, count, lead))
-
-    table = doc.add_table(rows=len(rows_data) + 2, cols=3)
-    headers = ['Discipline', 'Strength', 'Discipline Lead']
-    for i, h in enumerate(headers):
-        _header_cell(table.rows[0].cells[i], h)
-
-    for idx, (d, count, lead) in enumerate(rows_data, 1):
-        row = table.rows[idx]
-        fill = ROW_ALT if idx % 2 == 0 else None
-        _data_cell(row.cells[0], d, fill=fill)
-        _data_cell(row.cells[1], str(count), align='center', bold=True, fill=fill)
-        _data_cell(row.cells[2], lead, fill=fill)
-
-    total_row = table.rows[-1]
-    for i in range(3):
-        _shade_cell(total_row.cells[i], "1F4E78")
-    _data_cell(total_row.cells[0], "TOTAL ENGINEERING", bold=True,
-               color=RGBColor(0xFF, 0xFF, 0xFF))
-    _data_cell(total_row.cells[1], str(total_strength), align='center', bold=True,
-               color=RGBColor(0xFF, 0xFF, 0xFF))
-    _data_cell(total_row.cells[2], "All disciplines have nominated leads", bold=True,
-               color=RGBColor(0xFF, 0xFF, 0xFF))
-
-
-def _build_critical_items(doc, inputs):
-    _add_heading1(doc, "5. Critical Items & Decisions Needed")
-    _add_para(doc,
-              "Items requiring Engineering Head attention or escalation, "
-              "aggregated from each discipline's PREP submissions.",
-              size=10)
-
-    has_items = False
-    for inp in inputs:
-        if inp.get('critical_items'):
-            has_items = True
-            p = doc.add_paragraph()
-            _add_run(p, f"From {inp.get('discipline', '?')}:", size=11, bold=True, color=NAVY)
-            doc.add_paragraph(inp['critical_items'])
-
-    if not has_items:
-        _add_para(doc,
-                  "(No critical items submitted yet. Will be populated as discipline leads complete PREP.)",
-                  size=10, color=GREY)
-
-
-def _build_actions(doc, actions):
-    _add_heading1(doc, "6. Open Action Items")
-    _add_para(doc, "All actions currently open or in progress", size=9, color=GREY)
-
-    if not actions:
-        _add_para(doc, "(No open action items.)", size=10, color=GREY)
-        return
-
-    table = doc.add_table(rows=len(actions) + 1, cols=5)
-    headers = ['Sl.', 'Action Item', 'Owner', 'Due', 'Status']
-    for i, h in enumerate(headers):
-        _header_cell(table.rows[0].cells[i], h)
-
-    for idx, a in enumerate(actions, 1):
-        row = table.rows[idx]
-        fill = ROW_ALT if idx % 2 == 0 else None
-        status_label = a.get('status', 'OPEN')
-        status_color = GREEN if status_label == 'CLOSED' else (AMBER if status_label == 'IN_PROGRESS' else None)
-        status_icon = '✅' if status_label == 'CLOSED' else ('🟡' if status_label == 'IN_PROGRESS' else '🔴')
-        _data_cell(row.cells[0], str(idx), align='center', fill=fill)
-        _data_cell(row.cells[1], a.get('action_text', ''), fill=fill)
-        _data_cell(row.cells[2], a.get('owner_name', '—'), fill=fill)
-        _data_cell(row.cells[3], a.get('due_date', '—') or '—', align='center', fill=fill)
-        _data_cell(row.cells[4], f"{status_icon} {status_label}",
-                   color=status_color, fill=fill)
-
-
-def _build_coordination(doc, inputs):
-    _add_heading1(doc, "7. Major Issues & Interdisciplinary Coordination")
-    
-    # Aggregate concerns from inputs
-    concerns_by_disc = {}
-    manpower_by_disc = {}
-    for inp in inputs:
-        if inp.get('concerns'):
-            concerns_by_disc[inp.get('discipline', '?')] = inp['concerns']
-        if inp.get('manpower_issues'):
-            manpower_by_disc[inp.get('discipline', '?')] = inp['manpower_issues']
-
-    if concerns_by_disc:
-        _add_para(doc, "Concerns raised by disciplines:", size=11, bold=True)
-        for disc, c in concerns_by_disc.items():
-            p = doc.add_paragraph()
-            _add_run(p, f"{disc}: ", size=10, bold=True)
-            _add_run(p, c, size=10)
-    
-    if manpower_by_disc:
-        _add_para(doc, "Manpower / resource issues:", size=11, bold=True)
-        for disc, c in manpower_by_disc.items():
-            p = doc.add_paragraph()
-            _add_run(p, f"{disc}: ", size=10, bold=True)
-            _add_run(p, c, size=10)
-
-    if not concerns_by_disc and not manpower_by_disc:
-        _add_para(doc,
-                  "(Will be populated from PREP submissions and meeting discussions.)",
-                  size=10, color=GREY)
-
-
-def _build_software_training(doc, inputs):
-    _add_heading1(doc, "8. Software & Training Needs")
-    
-    needs_by_disc = {}
-    for inp in inputs:
-        if inp.get('software_needs'):
-            needs_by_disc[inp.get('discipline', '?')] = inp['software_needs']
-
-    if needs_by_disc:
-        for disc, c in needs_by_disc.items():
-            p = doc.add_paragraph()
-            _add_run(p, f"{disc}: ", size=10, bold=True)
-            _add_run(p, c, size=10)
-    else:
-        _add_para(doc,
-                  "(Will be populated from PREP submissions.)",
-                  size=10, color=GREY)
-
-
-def _build_decisions(doc, decisions):
-    if not decisions:
-        return
-    _add_heading1(doc, "9. Decisions Captured")
-    
-    for d in decisions:
-        p = doc.add_paragraph()
-        _add_run(p, f"{d.get('topic', '?')}: ", size=11, bold=True, color=NAVY)
-        _add_run(p, d.get('decision_text', ''), size=11)
-
-
-def _build_closing(doc):
-    _add_heading1(doc, "10. Notes for Discipline Leads (next meeting prep)")
-    _add_para(doc,
-              "From the next meeting onwards, this report is auto-generated by the MER module:",
-              size=10)
-    _add_bullet(doc, "1. PREP window opens on the 4th of the month (after timesheet locks 3rd EOD)", size=10)
-    _add_bullet(doc, "2. Each discipline lead logs in and fills their section", size=10)
-    _add_bullet(doc, "3. HP consolidates submissions and captures decisions during the meeting", size=10)
-    _add_bullet(doc, "4. Sangeeta reviews the auto-generated report", size=10)
-    _add_bullet(doc, "5. HP distributes the published version to the team", size=10)
-    _add_para(doc, "Reference: gcc-eet-timesheet.streamlit.app → MER tab",
-              size=9, color=GREY)
-
-
-# ════════════════════════════════════════════════════
-# MAIN ENTRY POINT
-# ════════════════════════════════════════════════════
-
-
-
-# ════════════════════════════════════════════════════
-# NARRATIVE-AWARE SECTION BUILDERS (Meeting #04 alignment)
-# ════════════════════════════════════════════════════
-
-def _narrative_or_default(narrative, key, default=None):
-    """Read a value from meeting_narrative JSONB, or return default."""
-    if narrative and isinstance(narrative, dict):
-        return narrative.get(key, default)
+def _narrative(meeting, key, default=None):
+    n = meeting.get('meeting_narrative')
+    if isinstance(n, dict):
+        v = n.get(key)
+        return v if v is not None else default
     return default
 
 
-def _build_project_status_v2(doc, meeting, entries_df, inputs, narrative):
-    """Project Status — uses canonical narrative if present, else PREP+timesheet."""
-    _add_heading1(doc, "2. Project Status — Key Updates from Each Project")
-    
-    project_table = _narrative_or_default(narrative, 'project_status_table')
-    
+# ── Cover ──
+def _build_cover(doc, meeting):
+    year, month = map(int, meeting['review_month'].split('-'))
+    month_name = date(year, month, 1).strftime('%B %Y')
+    end_of_month = (date(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1) - pd.Timedelta(days=1))
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(8)
+    _run(p, "GCC ENGINEERING", size=22, bold=True, color=NAVY)
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _run(p, "Monthly Engineering Review — Meeting Minutes", size=13, color=GREY, italic=True)
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(12)
+    _run(p, f"Meeting #{meeting['meeting_no']:02d}  ·  Reviewing {month_name}",
+         size=16, bold=True, color=ACCENT)
+
+    table = doc.add_table(rows=4, cols=4)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    end_str = end_of_month.strftime('%d-%b-%Y') if hasattr(end_of_month, 'strftime') else str(end_of_month)[:10]
+    rows = [
+        ("Meeting", "GCC Engineering Monthly Meeting",
+         "Meeting No", f"{meeting['meeting_no']:02d}"),
+        ("Date (data as of)", end_str,
+         "Held on", str(meeting.get('scheduled_date') or '—')[:10]),
+        ("Location", "GCC Arioli, Mumbai",
+         "Status", meeting.get('status', '—')),
+        ("Chaired by", meeting.get('reviewer') or 'Sangeeta Salvi',
+         "Prepared by", meeting.get('chair') or 'Hariprakash Pandey'),
+    ]
+    for i, (k1, v1, k2, v2) in enumerate(rows):
+        row = table.rows[i]
+        _data_cell(row.cells[0], k1, bold=True, fill=LIGHT_BG)
+        _data_cell(row.cells[1], v1)
+        _data_cell(row.cells[2], k2, bold=True, fill=LIGHT_BG)
+        _data_cell(row.cells[3], v2)
+    _para(doc)
+    _para(doc, "Attendees: All Engineering Team (EOUK_FE)", italic=True)
+
+
+# ── Section builders ──
+def _build_project_status(doc, meeting, entries_df, num):
+    project_table = _narrative(meeting, 'project_status_table')
+
+    _h1(doc, f"{num}. Project Status — Key Updates from Each Project")
+
     if project_table and isinstance(project_table, list) and len(project_table) > 0:
-        # Use the canonical narrative table
         table = doc.add_table(rows=len(project_table) + 1, cols=5)
-        headers = ['Sl.', 'Project Name', 'Project Status (Phase)', 'Present Status', 'Activities / Concerns']
-        for i, h in enumerate(headers):
+        for i, h in enumerate(['Sl.', 'Project Name', 'Project Status (Phase)', 'Present Status', 'Activities / Concerns']):
             _header_cell(table.rows[0].cells[i], h)
-        
         for idx, p in enumerate(project_table, 1):
             row = table.rows[idx]
             fill = ROW_ALT if idx % 2 == 0 else None
@@ -659,259 +208,301 @@ def _build_project_status_v2(doc, meeting, entries_df, inputs, narrative):
             _data_cell(row.cells[3], p.get('present_status', ''), fill=fill)
             _data_cell(row.cells[4], p.get('activities', ''), fill=fill)
         return
-    
-    # Fallback: original behaviour
-    _add_para(doc, "Aggregated from discipline lead inputs · Hours from timesheet",
-              size=9, color=GREY)
-    _build_project_status(doc, meeting, entries_df, inputs)
 
-
-def _build_misc_activities(doc, narrative):
-    """Section 3: Miscellaneous Activities."""
-    items = _narrative_or_default(narrative, 'misc_activities')
-    if not items:
-        return  # skip section entirely if no content
-    _add_heading1(doc, "3. Miscellaneous Activities")
-    for it in items:
-        _add_bullet(doc, it)
-
-
-def _build_coordination_v2(doc, narrative, inputs):
-    """Section 4: Major Issues & Interdisciplinary Coordination."""
-    points = _narrative_or_default(narrative, 'coordination_points')
-    _add_heading1(doc, "4. Major Issues & Interdisciplinary Coordination Points")
-    if points:
-        for p in points:
-            _add_bullet(doc, p)
-    else:
-        # Fallback to PREP concerns
-        concerns_by_disc = {}
-        for inp in inputs:
-            if inp.get('concerns'):
-                concerns_by_disc[inp.get('discipline', '?')] = inp['concerns']
-        if concerns_by_disc:
-            for disc, c in concerns_by_disc.items():
-                p = doc.add_paragraph()
-                _add_run(p, f"{disc}: ", size=10, bold=True)
-                _add_run(p, c, size=10)
-        else:
-            _add_para(doc, "(Will be populated from PREP submissions and meeting discussions.)",
-                      size=10, color=GREY)
-
-
-def _build_future_projection(doc, narrative):
-    """Section 5: Future Projection."""
-    points = _narrative_or_default(narrative, 'future_projection')
-    if not points:
-        return
-    _add_heading1(doc, "5. Future Projection of Projects Status")
-    for p in points:
-        _add_bullet(doc, p)
-
-
-def _build_manhours_v2(doc, entries_df, members, narrative):
-    """Section 6: Manhours Booking — with narrative intro."""
-    _add_heading1(doc, "6. Manhours Booking")
-    
-    narr_text = _narrative_or_default(
-        narrative, 'manhours_narrative',
-        "Manhours recorded diligently — essential for project claims. Demonstrates GCC Team value."
-    )
-    _add_para(doc, narr_text, size=10)
-    
-    # Reuse existing manhours table builder
     if len(entries_df) == 0:
-        _add_para(doc, "No data.", size=10, color=GREY)
+        _para(doc, "No project activity recorded.", italic=True, color=GREY)
         return
-    _build_manhours_table_only(doc, entries_df, members)
+
+    # Fallback: just project + hours
+    proj_hours = entries_df.groupby('proj')['hrs'].sum().sort_values(ascending=False)
+    table = doc.add_table(rows=len(proj_hours) + 1, cols=3)
+    for i, h in enumerate(['Sl.', 'Project', 'Hours']):
+        _header_cell(table.rows[0].cells[i], h)
+    for idx, (pname, hrs) in enumerate(proj_hours.items(), 1):
+        row = table.rows[idx]
+        fill = ROW_ALT if idx % 2 == 0 else None
+        _data_cell(row.cells[0], str(idx), align='center', fill=fill)
+        _data_cell(row.cells[1], pname, bold=True, fill=fill)
+        _data_cell(row.cells[2], f"{hrs:.0f}", align='right', fill=fill)
 
 
-def _build_manhours_table_only(doc, entries_df, members):
-    """Just the manhours table (no heading, no intro)."""
+def _build_misc(doc, meeting, num):
+    items = _narrative(meeting, 'misc_activities')
+    if not items:
+        return False
+    _h1(doc, f"{num}. Miscellaneous Activities")
+    for it in items:
+        _bullet(doc, it)
+    return True
+
+
+def _build_coordination(doc, meeting, inputs, num):
+    points = _narrative(meeting, 'coordination_points')
+    if not points:
+        concerns = [(i.get('discipline', '?'), i.get('concerns', '')) for i in inputs if i.get('concerns')]
+        if not concerns:
+            return False
+        _h1(doc, f"{num}. Major Issues & Interdisciplinary Coordination Points")
+        for disc, txt in concerns:
+            p = doc.add_paragraph()
+            _run(p, f"{disc}: ", size=10, bold=True, color=NAVY)
+            _run(p, txt, size=10)
+        return True
+    _h1(doc, f"{num}. Major Issues & Interdisciplinary Coordination Points")
+    for p in points:
+        _bullet(doc, p)
+    return True
+
+
+def _build_future(doc, meeting, num):
+    points = _narrative(meeting, 'future_projection')
+    if not points:
+        return False
+    _h1(doc, f"{num}. Future Projection of Projects Status")
+    for p in points:
+        _bullet(doc, p)
+    return True
+
+
+def _build_manhours(doc, meeting, entries_df, members, num):
+    _h1(doc, f"{num}. Manhours Booking — Discipline-wise")
+
+    narr = _narrative(meeting, 'manhours_narrative',
+                      "Manhours must be recorded diligently. Accurate booking is essential for project claims, "
+                      "and ensures the value contributed by the GCC Team is clearly demonstrated. "
+                      "Workhours analysis can be extracted from Timesheet.")
+    _para(doc, narr)
+    _para(doc)
+
+    if len(entries_df) == 0:
+        _para(doc, "No timesheet data for this period.", italic=True, color=GREY)
+        return
+
     mem_lookup = {m['id']: m for m in members}
     entries_df = entries_df.copy()
-    entries_df['discipline'] = entries_df['uid'].map(
-        lambda u: mem_lookup.get(u, {}).get('discipline', '-')
-    )
+    entries_df['discipline'] = entries_df['uid'].map(lambda u: mem_lookup.get(u, {}).get('discipline', '-'))
 
     excluded_uids = {m['id'] for m in members if m.get('excluded_from_productivity')}
     df_eng = entries_df[~entries_df['uid'].isin(excluded_uids)]
     df_mgmt = entries_df[entries_df['uid'].isin(excluded_uids)]
 
-    disc_summary = (df_eng.groupby('discipline')
-                          .agg(Hours=('hrs', 'sum'), Members=('uid', 'nunique'))
-                          .reset_index()
-                          .sort_values('Hours', ascending=False))
+    disc = (df_eng.groupby('discipline')
+                  .agg(Hours=('hrs', 'sum'), Members=('uid', 'nunique'))
+                  .reset_index()
+                  .sort_values('Hours', ascending=False))
 
-    total_eng_hrs = df_eng['hrs'].sum()
-    mgmt_hrs = df_mgmt['hrs'].sum()
-    grand_total = total_eng_hrs + mgmt_hrs
-    n_mgmt_members = df_mgmt['uid'].nunique()
+    grand_total = df_eng['hrs'].sum() + df_mgmt['hrs'].sum()
 
-    n_rows = len(disc_summary) + 3
-    table = doc.add_table(rows=n_rows, cols=4)
-    headers = ['Discipline', 'Members', 'Hours', '% of Total']
-    for i, h in enumerate(headers):
+    table = doc.add_table(rows=len(disc) + 3, cols=4)
+    for i, h in enumerate(['Discipline', 'Members', 'Hours', '% of Total']):
         _header_cell(table.rows[0].cells[i], h)
 
-    for idx, (_, r) in enumerate(disc_summary.iterrows(), 1):
+    for idx, (_, r) in enumerate(disc.iterrows(), 1):
         row = table.rows[idx]
         pct = r['Hours'] / grand_total * 100 if grand_total else 0
-        bars = '━' * round(pct / 2)
         fill = ROW_ALT if idx % 2 == 0 else None
         _data_cell(row.cells[0], r['discipline'], bold=True, fill=fill)
         _data_cell(row.cells[1], str(int(r['Members'])), align='center', fill=fill)
         _data_cell(row.cells[2], f"{r['Hours']:.0f}", align='right', bold=True, fill=fill)
-        _data_cell(row.cells[3], f"{pct:.0f}%  {bars}", fill=fill)
+        _data_cell(row.cells[3], f"{pct:.0f}%", align='right', fill=fill)
 
-    mgmt_row = table.rows[len(disc_summary) + 1]
-    _data_cell(mgmt_row.cells[0], "Engineering Management (HP+Sangeeta — excluded)",
-               bold=True, fill=LIGHT_BG)
-    _data_cell(mgmt_row.cells[1], str(n_mgmt_members), align='center', fill=LIGHT_BG)
-    _data_cell(mgmt_row.cells[2], f"{mgmt_hrs:.0f}", align='right', bold=True, fill=LIGHT_BG)
-    _data_cell(mgmt_row.cells[3], "Excluded from productivity scoring", fill=LIGHT_BG)
+    mgmt_row = table.rows[len(disc) + 1]
+    _data_cell(mgmt_row.cells[0], "Engineering Management (HP + Sangeeta)", bold=True, fill=LIGHT_BG)
+    _data_cell(mgmt_row.cells[1], str(df_mgmt['uid'].nunique()), align='center', fill=LIGHT_BG)
+    _data_cell(mgmt_row.cells[2], f"{df_mgmt['hrs'].sum():.0f}", align='right', bold=True, fill=LIGHT_BG)
+    _data_cell(mgmt_row.cells[3], "Excluded", italic=True, fill=LIGHT_BG)
 
     total_row = table.rows[-1]
     for i in range(4):
         _shade_cell(total_row.cells[i], "1F4E78")
-    n_total = df_eng['uid'].nunique() + n_mgmt_members
     _data_cell(total_row.cells[0], "TOTAL", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
-    _data_cell(total_row.cells[1], str(n_total), align='center', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    _data_cell(total_row.cells[1], str(df_eng['uid'].nunique() + df_mgmt['uid'].nunique()),
+               align='center', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
     _data_cell(total_row.cells[2], f"{grand_total:.0f}", align='right', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
-    _data_cell(total_row.cells[3], "100%", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    _data_cell(total_row.cells[3], "100%", align='right', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
 
 
-def _build_assurance(doc, narrative):
-    """Section 8: Assurance."""
-    assurance = _narrative_or_default(narrative, 'assurance_status')
-    if not assurance:
-        return
-    _add_heading1(doc, "8. Assurance")
-    if isinstance(assurance, dict):
-        if assurance.get('paragraph_1'):
-            _add_para(doc, assurance['paragraph_1'], size=10)
-        if assurance.get('paragraph_2'):
-            _add_para(doc, assurance['paragraph_2'], size=10)
-        if assurance.get('status'):
+def _build_strength(doc, members, num):
+    """Engineering Strength matching Word doc: Head/Dy Head separate, disciplines below.
+    Excludes admins not assigned to disciplines."""
+    _h1(doc, f"{num}. Engineering Strength — Discipline-wise")
+
+    # Identify HP and Sangeeta (id=2, id=1)
+    head = next((m for m in members if m['id'] == 1), None)
+    dy = next((m for m in members if m['id'] == 2), None)
+    head_id = head['id'] if head else None
+    dy_id = dy['id'] if dy else None
+
+    # Exclude HP, Sangeeta, and admin-only members (super_admin but not discipline lead) from discipline counts
+    disc_members = []
+    for m in members:
+        if m.get('dept') != 'Engineering':
+            continue
+        if m['id'] in (head_id, dy_id):
+            continue
+        if m.get('discipline') == 'Engineering Management':
+            continue  # admins like Prachi/Pradeep/Aarti or stragglers
+        if m.get('is_super_admin') and not m.get('is_discipline_lead'):
+            continue
+        disc_members.append(m)
+
+    # Group by discipline
+    disc_counts = {}
+    disc_leads = {}
+    for m in disc_members:
+        d = (m.get('discipline') or 'Unspecified').strip()
+        disc_counts[d] = disc_counts.get(d, 0) + 1
+        if m.get('is_discipline_lead') and (m.get('leads_discipline') or '').strip() == d:
+            disc_leads[d] = m['name']
+
+    rows = []
+    if head:
+        rows.append(('Engineering Head', 1, head['name']))
+    if dy:
+        rows.append(('Dy Engineering Head', 1, dy['name']))
+    for d, count in sorted(disc_counts.items(), key=lambda x: -x[1]):
+        rows.append((d, count, disc_leads.get(d, '—')))
+
+    total = sum(r[1] for r in rows)
+
+    table = doc.add_table(rows=len(rows) + 2, cols=3)
+    for i, h in enumerate(['Discipline', 'Strength', 'Discipline Lead']):
+        _header_cell(table.rows[0].cells[i], h)
+
+    for idx, (d, count, lead) in enumerate(rows, 1):
+        row = table.rows[idx]
+        fill = ROW_ALT if idx % 2 == 0 else None
+        _data_cell(row.cells[0], d, bold=(idx <= 2), fill=fill)
+        _data_cell(row.cells[1], str(count), align='center', bold=True, fill=fill)
+        _data_cell(row.cells[2], lead, fill=fill)
+
+    total_row = table.rows[-1]
+    for i in range(3):
+        _shade_cell(total_row.cells[i], "1F4E78")
+    _data_cell(total_row.cells[0], "TOTAL", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    _data_cell(total_row.cells[1], str(total), align='center', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    _data_cell(total_row.cells[2], "All disciplines have nominated leads", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+
+
+def _build_assurance(doc, meeting, num):
+    a = _narrative(meeting, 'assurance_status')
+    if not a:
+        return False
+    _h1(doc, f"{num}. Assurance")
+    if isinstance(a, dict):
+        if a.get('paragraph_1'):
+            _para(doc, a['paragraph_1'])
+        if a.get('paragraph_2'):
+            _para(doc, a['paragraph_2'])
+        if a.get('status'):
             p = doc.add_paragraph()
-            _add_run(p, "Status: ", size=10, bold=True, color=NAVY)
-            _add_run(p, assurance['status'], size=10)
-    elif isinstance(assurance, str):
-        _add_para(doc, assurance, size=10)
-
-
-def _build_critical_decisions(doc, narrative, inputs):
-    """Section 9: Risks, Changes & Critical Decisions Needed."""
-    points = _narrative_or_default(narrative, 'critical_decisions')
-    _add_heading1(doc, "9. Risks, Changes & Critical Decisions Needed")
-    if points:
-        for p in points:
-            _add_bullet(doc, p)
-        return
-    
-    # Fallback to PREP critical_items
-    has_items = False
-    for inp in inputs:
-        if inp.get('critical_items'):
-            has_items = True
-            p = doc.add_paragraph()
-            _add_run(p, f"From {inp.get('discipline', '?')}:", size=11, bold=True, color=NAVY)
-            doc.add_paragraph(inp['critical_items'])
-    if not has_items:
-        _add_para(doc, "(No critical items submitted yet.)", size=10, color=GREY)
-
-
-def _build_suggestions(doc, narrative):
-    """Section 10: Suggestions."""
-    points = _narrative_or_default(narrative, 'suggestions')
-    if not points:
-        return
-    _add_heading1(doc, "10. Suggestions")
-    for p in points:
-        _add_bullet(doc, p)
-
-
-def _build_software_training(doc, narrative, inputs):
-    """Section 11: Software Training Sessions."""
-    st_data = _narrative_or_default(narrative, 'software_training')
-    _add_heading1(doc, "11. Software Training Sessions")
-    
-    if st_data and isinstance(st_data, dict):
-        # Narrative bullets first
-        if st_data.get('narrative_points'):
-            for n in st_data['narrative_points']:
-                _add_bullet(doc, n)
-        # Training table
-        tt = st_data.get('training_table')
-        if tt:
-            _add_para(doc, "Discipline plans need to be established.", size=10, bold=True)
-            table = doc.add_table(rows=len(tt) + 1, cols=4)
-            headers = ['Sl.', 'Training Description', 'No of Team Members Participated', 'Status']
-            for i, h in enumerate(headers):
-                _header_cell(table.rows[0].cells[i], h)
-            for idx, t in enumerate(tt, 1):
-                row = table.rows[idx]
-                fill = ROW_ALT if idx % 2 == 0 else None
-                _data_cell(row.cells[0], str(t.get('sl', idx)), align='center', fill=fill)
-                _data_cell(row.cells[1], t.get('training', ''), bold=True, fill=fill)
-                _data_cell(row.cells[2], t.get('participants', ''), align='center', fill=fill)
-                status = t.get('status', '')
-                color = GREEN if status == 'Conducted' else (AMBER if status == 'Under progress' else GREY)
-                _data_cell(row.cells[3], status, color=color, bold=True, fill=fill)
-        return
-    
-    # Fallback to PREP
-    needs_by_disc = {}
-    for inp in inputs:
-        if inp.get('software_needs'):
-            needs_by_disc[inp.get('discipline', '?')] = inp['software_needs']
-    if needs_by_disc:
-        for disc, c in needs_by_disc.items():
-            p = doc.add_paragraph()
-            _add_run(p, f"{disc}: ", size=10, bold=True)
-            _add_run(p, c, size=10)
+            _run(p, "Status: ", size=10, bold=True, color=NAVY)
+            _run(p, a['status'], size=10)
     else:
-        _add_para(doc, "(Will be populated from PREP submissions.)", size=10, color=GREY)
+        _para(doc, str(a))
+    return True
 
 
-def _build_what_we_can_do(doc, narrative):
-    """Section 12: What We Can Do Further."""
-    items = _narrative_or_default(narrative, 'what_we_can_do_further')
+def _build_critical(doc, meeting, inputs, num):
+    points = _narrative(meeting, 'critical_decisions')
+    if not points:
+        prep_items = [(i.get('discipline', '?'), i.get('critical_items', ''))
+                      for i in inputs if i.get('critical_items')]
+        if not prep_items:
+            return False
+        _h1(doc, f"{num}. Risks, Changes & Critical Decisions Needed")
+        for disc, txt in prep_items:
+            p = doc.add_paragraph()
+            _run(p, f"{disc}: ", size=10, bold=True, color=NAVY)
+            _run(p, txt, size=10)
+        return True
+    _h1(doc, f"{num}. Risks, Changes & Critical Decisions Needed")
+    for p in points:
+        _bullet(doc, p)
+    return True
+
+
+def _build_suggestions(doc, meeting, num):
+    points = _narrative(meeting, 'suggestions')
+    if not points:
+        return False
+    _h1(doc, f"{num}. Suggestions")
+    for p in points:
+        _bullet(doc, p)
+    return True
+
+
+def _build_software_training(doc, meeting, num):
+    st = _narrative(meeting, 'software_training')
+    if not st or not isinstance(st, dict):
+        return False
+    _h1(doc, f"{num}. Software Training Sessions")
+
+    if st.get('narrative_points'):
+        for n in st['narrative_points']:
+            _bullet(doc, n)
+
+    tt = st.get('training_table')
+    if tt:
+        _para(doc)
+        _para(doc, "Training Status:", bold=True)
+        table = doc.add_table(rows=len(tt) + 1, cols=4)
+        for i, h in enumerate(['Sl.', 'Training Description', 'Participants', 'Status']):
+            _header_cell(table.rows[0].cells[i], h)
+        for idx, t in enumerate(tt, 1):
+            row = table.rows[idx]
+            fill = ROW_ALT if idx % 2 == 0 else None
+            _data_cell(row.cells[0], str(t.get('sl', idx)), align='center', fill=fill)
+            _data_cell(row.cells[1], t.get('training', ''), bold=True, fill=fill)
+            _data_cell(row.cells[2], t.get('participants', ''), align='center', fill=fill)
+            status = t.get('status', '')
+            color = GREEN if status == 'Conducted' else (AMBER if status == 'Under progress' else GREY)
+            _data_cell(row.cells[3], status, color=color, bold=True, fill=fill)
+    return True
+
+
+def _build_quality(doc, meeting, num):
+    items = _narrative(meeting, 'what_we_can_do_further')
     if not items:
-        return
-    _add_heading1(doc, "12. What We Can Do Further — How We Make the Difference")
+        return False
+    _h1(doc, f"{num}. What We Can Do Further — Quality Framework")
     for it in items:
         if isinstance(it, dict):
             p = doc.add_paragraph(style='List Bullet')
-            _add_run(p, it.get('point', ''), size=10)
+            _run(p, it.get('point', ''), size=10)
             if it.get('update'):
-                p2 = doc.add_paragraph()
-                p2.paragraph_format.left_indent = Inches(0.5)
-                _add_run(p2, "Update: ", size=10, bold=True, color=ACCENT)
-                _add_run(p2, it['update'], size=10, italic=True)
+                up = doc.add_paragraph()
+                up.paragraph_format.left_indent = Inches(0.5)
+                _run(up, "Update: ", size=9, bold=True, color=ACCENT, italic=True)
+                _run(up, it['update'], size=9, italic=True)
         else:
-            _add_bullet(doc, str(it))
+            _bullet(doc, str(it))
+    return True
 
 
-def _build_additional_points(doc, narrative):
-    """Section 13: Any Other Additional Points."""
-    points = _narrative_or_default(narrative, 'additional_points')
-    if not points:
-        return
-    _add_heading1(doc, "13. Any Other Additional Points")
-    if isinstance(points, list):
-        for p in points:
-            _add_bullet(doc, p)
-    else:
-        _add_para(doc, str(points), size=10)
+def _build_actions(doc, actions, num):
+    if not actions:
+        return False
+    _h1(doc, f"{num}. Open Action Items")
+    table = doc.add_table(rows=len(actions) + 1, cols=5)
+    for i, h in enumerate(['Sl.', 'Action', 'Owner', 'Due', 'Status']):
+        _header_cell(table.rows[0].cells[i], h)
+    for idx, a in enumerate(actions, 1):
+        row = table.rows[idx]
+        fill = ROW_ALT if idx % 2 == 0 else None
+        _data_cell(row.cells[0], str(idx), align='center', fill=fill)
+        _data_cell(row.cells[1], a.get('action_text', ''), fill=fill)
+        _data_cell(row.cells[2], a.get('owner_name', '—'), fill=fill)
+        _data_cell(row.cells[3], str(a.get('due_date') or '—'), align='center', fill=fill)
+        status = a.get('status', 'OPEN')
+        color = GREEN if status == 'CLOSED' else (AMBER if status == 'IN_PROGRESS' else None)
+        _data_cell(row.cells[4], status, color=color, bold=True, fill=fill)
+    return True
 
 
+# ── Main ──
 def generate_report(meeting_id):
-    """
-    Generate the 6-page A4 MER report DOCX for the given meeting.
-    
-    Returns: BytesIO buffer containing the .docx file
-    """
+    """Generate the MER DOCX. Returns BytesIO."""
     meeting = _load_meeting(meeting_id)
     if not meeting:
         raise ValueError(f"Meeting {meeting_id} not found")
@@ -921,64 +512,48 @@ def generate_report(meeting_id):
     members = db.get_members()
     inputs = _load_inputs(meeting_id)
     actions = _load_actions()
-    decisions = _load_decisions(meeting_id)
 
-    df = pd.DataFrame(entries) if entries else pd.DataFrame(columns=['uid', 'proj', 'hrs', 'description'])
+    df = pd.DataFrame(entries) if entries else pd.DataFrame(columns=['uid', 'proj', 'hrs', 'description', 'act'])
     if len(df):
         df['hrs'] = df['hrs'].astype(float)
 
     doc = Document()
-
-    # Set page margins
     for section in doc.sections:
-        section.top_margin = Inches(0.75)
-        section.bottom_margin = Inches(0.75)
+        section.top_margin = Inches(0.7)
+        section.bottom_margin = Inches(0.7)
         section.left_margin = Inches(0.75)
         section.right_margin = Inches(0.75)
 
     # Header & footer
-    header = doc.sections[0].header
-    h_para = header.paragraphs[0]
-    h_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    _add_run(h_para,
-             f"GCC Engineering Monthly Review · Meeting #{meeting['meeting_no']:02d} · "
-             f"Reviewing {meeting['review_month']}",
-             size=9, color=GREY)
+    h = doc.sections[0].header.paragraphs[0]
+    h.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    _run(h, f"GCC Engineering Monthly Review · Meeting #{meeting['meeting_no']:02d}",
+         size=9, color=GREY, italic=True)
 
-    footer = doc.sections[0].footer
-    f_para = footer.paragraphs[0]
-    f_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _add_run(f_para,
-             f"Prepared by {meeting.get('chair', 'HP')} · "
-             f"Reviewed by {meeting.get('reviewer', 'Sangeeta')} · "
-             f"Generated {datetime.utcnow().strftime('%d-%b-%Y %H:%M')} UTC",
-             size=9, color=GREY)
+    f = doc.sections[0].footer.paragraphs[0]
+    f.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _run(f, f"Prepared by {meeting.get('chair') or 'Hariprakash Pandey'} · "
+            f"Chaired by {meeting.get('reviewer') or 'Sangeeta Salvi'} · "
+            f"Generated {datetime.utcnow().strftime('%d-%b-%Y')}",
+         size=9, color=GREY, italic=True)
 
-    # Get narrative override if present (used for #04 and any meeting with canonical content)
-    narrative = meeting.get('meeting_narrative')
-    
-    # Build all sections — aligned with Meeting #04 canonical Word doc structure
-    _build_cover(doc, meeting)                                  # Cover/metadata
-    _build_key_highlights(doc, meeting, df, members)            # 1. Key Highlights
-    _build_project_status_v2(doc, meeting, df, inputs, narrative)  # 2. Project Status
-    _build_misc_activities(doc, narrative)                      # 3. Misc Activities
-    _build_coordination_v2(doc, narrative, inputs)              # 4. Coordination
-    _build_future_projection(doc, narrative)                    # 5. Future Projection
-    _build_manhours_v2(doc, df, members, narrative)             # 6. Manhours
-    _build_engineering_strength(doc, members)                   # 7. Engineering Strength
-    _build_assurance(doc, narrative)                            # 8. Assurance
-    _build_critical_decisions(doc, narrative, inputs)           # 9. Critical Decisions
-    _build_suggestions(doc, narrative)                          # 10. Suggestions
-    _build_software_training(doc, narrative, inputs)            # 11. Software Training
-    _build_what_we_can_do(doc, narrative)                       # 12. What We Can Do Further
-    _build_additional_points(doc, narrative)                    # 13. Any Other Additional Points
-    
-    # Append: actions, decisions (current month operational items)
-    _build_actions(doc, actions)
-    _build_decisions(doc, decisions)
-    _build_closing(doc)
+    # ── Build sections — only include if has content; auto-numbered ──
+    _build_cover(doc, meeting)
 
-    # Save to buffer
+    n = 1
+    _build_project_status(doc, meeting, df, n); n += 1
+    if _build_misc(doc, meeting, n): n += 1
+    if _build_coordination(doc, meeting, inputs, n): n += 1
+    if _build_future(doc, meeting, n): n += 1
+    _build_manhours(doc, meeting, df, members, n); n += 1
+    _build_strength(doc, members, n); n += 1
+    if _build_assurance(doc, meeting, n): n += 1
+    if _build_critical(doc, meeting, inputs, n): n += 1
+    if _build_suggestions(doc, meeting, n): n += 1
+    if _build_software_training(doc, meeting, n): n += 1
+    if _build_quality(doc, meeting, n): n += 1
+    if _build_actions(doc, actions, n): n += 1
+
     buf = BytesIO()
     doc.save(buf)
     buf.seek(0)
@@ -986,6 +561,5 @@ def generate_report(meeting_id):
 
 
 def generate_report_filename(meeting):
-    """Standard filename for the generated report."""
     return (f"GCC_MER_Meeting_{meeting['meeting_no']:02d}_"
             f"{meeting['review_month'].replace('-', '_')}.docx")
