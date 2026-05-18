@@ -508,54 +508,6 @@ def _build_actions(doc, actions, num):
 
 
 
-# ── DIAGNOSTIC (temporary) ──
-def _add_diagnostic(doc, meeting):
-    """Show what was loaded from meeting_narrative. REMOVE after debugging."""
-    import json
-    p = doc.add_paragraph()
-    _run(p, "🔍 DIAGNOSTIC — Generator v4 [REMOVE AFTER DEBUG]", size=11, bold=True, color=RED)
-    
-    n = meeting.get('meeting_narrative')
-    p = doc.add_paragraph()
-    _run(p, f"meeting_narrative type: ", size=10, bold=True)
-    _run(p, str(type(n).__name__), size=10, color=NAVY)
-    
-    if n is None:
-        p = doc.add_paragraph()
-        _run(p, "→ narrative is None. Either DB column is empty or not being selected.", size=10, color=RED)
-        return
-    
-    # Try to parse if string
-    if isinstance(n, str):
-        p = doc.add_paragraph()
-        _run(p, f"→ narrative came as STRING (length {len(n)}). Trying to parse JSON...", size=10, color=AMBER)
-        try:
-            n = json.loads(n)
-            p = doc.add_paragraph()
-            _run(p, "✓ Parsed OK", size=10, color=GREEN)
-        except Exception as e:
-            p = doc.add_paragraph()
-            _run(p, f"✗ JSON parse failed: {e}", size=10, color=RED)
-            return
-    
-    if isinstance(n, dict):
-        p = doc.add_paragraph()
-        _run(p, f"narrative has {len(n)} keys: ", size=10, bold=True)
-        _run(p, ", ".join(n.keys()), size=10, color=NAVY)
-        
-        # Check the specific keys we need
-        ps = n.get('project_status_table')
-        p = doc.add_paragraph()
-        _run(p, "project_status_table: ", size=10, bold=True)
-        if ps is None:
-            _run(p, "MISSING", size=10, color=RED)
-        elif isinstance(ps, list):
-            _run(p, f"list with {len(ps)} items ✓", size=10, color=GREEN)
-        else:
-            _run(p, f"unexpected type: {type(ps).__name__}", size=10, color=RED)
-    
-    doc.add_paragraph()  # spacer
-
 
 # ── Main ──
 def generate_report(meeting_id):
@@ -596,9 +548,6 @@ def generate_report(meeting_id):
 
     # ── Build sections — only include if has content; auto-numbered ──
     _build_cover(doc, meeting)
-
-    # ── DIAGNOSTIC (temporary) — shows what narrative was loaded ──
-    _add_diagnostic(doc, meeting)
 
     n = 1
     _build_project_status(doc, meeting, df, n); n += 1
