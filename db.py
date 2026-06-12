@@ -479,18 +479,70 @@ def get_custom_acts():
         return []
 
 
-def add_custom_act(code, description, discipline):
+def add_custom_act(code, description, discipline, category="8"):
     sb = get_client()
     sb.table("ts_custom_acts").insert({
         "id": int(datetime.now().timestamp() * 1000),
         "code": code.upper(),
         "description": description,
-        "discipline": discipline
+        "discipline": discipline,
+        "category": str(category),
     }).execute()
     st.cache_data.clear()
+
+
+def update_custom_act(act_id, code=None, description=None, discipline=None, category=None):
+    """Update fields of a custom activity code. Only non-None fields are changed."""
+    sb = get_client()
+    payload = {}
+    if code is not None:
+        payload["code"] = code.upper()
+    if description is not None:
+        payload["description"] = description
+    if discipline is not None:
+        payload["discipline"] = discipline
+    if category is not None:
+        payload["category"] = str(category)
+    if payload:
+        sb.table("ts_custom_acts").update(payload).eq("id", act_id).execute()
+        st.cache_data.clear()
 
 
 def delete_custom_act(act_id):
     sb = get_client()
     sb.table("ts_custom_acts").delete().eq("id", act_id).execute()
     st.cache_data.clear()
+
+
+def bulk_upsert_custom_acts(rows):
+    """Bulk insert/update custom activity codes.
+
+    rows: list of dicts with keys code, description, discipline, category.
+    Matches existing custom codes on (code, discipline):
+      - match found  -> update description + category
+      - no match     -> insert new custom code
+    Returns (added, updated) counts.
+    """
+    existing = {(c["code"].upper(), c["discipline"]): c for c in get_custom_acts()}
+    sb = get_client()
+    added, updated = 0, 0
+    for r in rows:
+        key = (r["code"].upper(), r["discipline"])
+        if key in existing:
+            cur = existing[key]
+            sb.table("ts_custom_acts").update({
+                "description": r["description"],
+                "category": str(r.get("category", "8")),
+            }).eq("id", cur["id"]).execute()
+            updated += 1
+        else:
+            sb.table("ts_custom_acts").insert({
+                "id": int(datetime.now().timestamp() * 1000) + added,
+                "code": r["code"].upper(),
+                "description": r["description"],
+                "discipline": r["discipline"],
+                "category": str(r.get("category", "8")),
+            }).execute()
+            added += 1
+    st.cache_data.clear()
+    return added, updated

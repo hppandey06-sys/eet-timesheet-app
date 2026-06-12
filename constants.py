@@ -154,6 +154,68 @@ DISCIPLINE_ACTIVITIES = {
 }
 
 
+# ── Productivity categories (8 segments) ──
+# Background classification of activity codes for productivity reporting.
+# Visible to admins / discipline leads only; members never see these.
+ACTIVITY_CATEGORIES = {
+    "1": ("Production of deliverables", "Direct"),
+    "2": ("Checking & review", "Direct"),
+    "3": ("Studies & analysis", "Direct"),
+    "4": ("Meetings & coordination", "Direct"),
+    "5": ("Site & construction support", "Direct"),
+    "6": ("Engg. standards & QMS development", "Indirect"),
+    "7": ("Training & development", "Indirect"),
+    "8": ("Admin, leave & others", "Indirect"),
+}
+
+
+def category_label(cat_no):
+    """'1' -> '1. Production of deliverables'"""
+    c = ACTIVITY_CATEGORIES.get(str(cat_no))
+    return f"{cat_no}. {c[0]}" if c else f"{cat_no}. Unknown"
+
+
+CATEGORY_OPTIONS = [category_label(k) for k in ACTIVITY_CATEGORIES]
+
+
+# Category of each BUILT-IN code, per discipline (custom codes carry their
+# category in the ts_custom_acts.category column instead).
+BUILTIN_ACT_CATEGORIES = {
+    "Process": {"PRS-01": "1", "PRS-02": "2", "PRS-03": "3", "PRS-04": "3",
+                "PRS-05": "3", "PRS-06": "1", "PRS-07": "2", "PRS-08": "2"},
+    "Electrical": {"ELEC-01": "1", "ELEC-02": "1", "ELEC-03": "1",
+                   "ELEC-04": "2", "ELEC-05": "5"},
+    "Instrumentation": {"INS-01": "1", "INS-02": "1", "INS-03": "1",
+                        "INS-04": "1", "INS-05": "1"},
+    "Piping & layout": {"PIP-01": "1", "PIP-02": "1", "PIP-03": "1",
+                        "PIP-04": "1", "PIP-05": "4"},
+    "Civil & Structural": {"CIV-01": "1", "CIV-02": "1", "CIV-03": "1", "CIV-04": "5"},
+    "Mech-Static": {"MS-01": "1", "MS-02": "1", "MS-03": "1", "MS-04": "1"},
+    "Mech-Rotary & Package": {"MR-01": "1", "MR-02": "1", "MR-03": "4"},
+    "Mech-Rotary": {"MR-01": "1", "MR-02": "1", "MR-03": "4"},
+    "CAD": {"CAD-01": "1", "CAD-02": "1", "CAD-03": "2"},
+    "HSE + Process Safety": {"HSE-01": "3", "HSE-02": "3", "HSE-03": "1", "HSE-04": "3"},
+    "ESG": {"ESG-01": "1", "ESG-02": "3", "ESG-03": "1"},
+    "Engineering Management": {"EM-01": "4", "EM-02": "4", "EM-03": "4", "EM-04": "4"},
+    "Document Control": {"DC-01": "1", "DC-02": "1", "DC-03": "8"},
+    "Project Management": {"PM-01": "4", "PM-02": "3", "PM-03": "4", "PM-04": "1"},
+    "Project control": {"PC-01": "3", "PC-02": "3", "PC-03": "4"},
+}
+
+
+def get_act_category(code, discipline, custom_acts=None):
+    """Resolve a code to its category number ('1'..'8').
+
+    Order: custom code category column -> built-in mapping -> '8' (default).
+    """
+    code = (code or "").upper()
+    if custom_acts:
+        for c in custom_acts:
+            if c.get("code", "").upper() == code and c.get("discipline") == discipline:
+                return str(c.get("category") or "8")
+    return BUILTIN_ACT_CATEGORIES.get(discipline, {}).get(code, "8")
+
+
 def todayIST():
     """Today's date in YYYY-MM-DD format (server-side)."""
     return date.today().strftime("%Y-%m-%d")

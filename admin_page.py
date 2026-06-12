@@ -11,7 +11,8 @@ import excel_export
 import reminders_page
 from constants import (
     DEPT_DISCIPLINES, DISCIPLINE_ACTIVITIES, get_month_label,
-    todayIST, HOLIDAYS_2026, COMPANIES
+    todayIST, HOLIDAYS_2026, COMPANIES,
+    ACTIVITY_CATEGORIES, CATEGORY_OPTIONS, category_label, get_act_category,
 )
 
 
@@ -236,16 +237,19 @@ def show_projects_tab():
 def show_activity_codes_tab():
     st.markdown("#### 🏷️ Activity Codes")
 
-    sub_tab1, sub_tab2 = st.tabs(["By Discipline", "By Project (workstreams)"])
+    sub_tab1, sub_tab2, sub_tab3 = st.tabs(
+        ["By Discipline", "By Project (workstreams)", "Bulk Upload (Excel)"])
 
     with sub_tab1:
         show_discipline_codes()
     with sub_tab2:
         show_project_codes()
+    with sub_tab3:
+        show_bulk_upload_codes()
 
 
 def show_discipline_codes():
-    """Discipline-based activity codes."""
+    """Discipline-based activity codes with productivity category."""
     st.markdown("##### Discipline Activity Codes")
 
     all_disciplines = sorted(set(
@@ -256,47 +260,175 @@ def show_discipline_codes():
 
     with st.expander("➕ Add custom activity code", expanded=False):
         with st.form("add_act"):
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             with col1:
                 code = st.text_input("Code", placeholder="e.g. PRS-12")
+                disc = st.selectbox("Discipline", all_disciplines, key="add_act_disc")
             with col2:
                 desc = st.text_input("Description", placeholder="e.g. HAZOP Review")
-            with col3:
-                disc = st.selectbox("Discipline", all_disciplines, key="add_act_disc")
+                cat = st.selectbox("Productivity category", CATEGORY_OPTIONS, key="add_act_cat")
 
             if st.form_submit_button("Add", type="primary"):
                 if code and desc and disc:
-                    try:
-                        db.add_custom_act(code, desc, disc)
-                        st.success(f"✅ {code} added")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
-
-    rows = []
-    if sel_disc == "All":
-        for disc in all_disciplines:
-            for code, desc in DISCIPLINE_ACTIVITIES.get(disc, []):
-                rows.append({"Code": code, "Description": desc, "Discipline": disc, "Type": "Built-in"})
-    else:
-        for code, desc in DISCIPLINE_ACTIVITIES.get(sel_disc, []):
-            rows.append({"Code": code, "Description": desc, "Discipline": sel_disc, "Type": "Built-in"})
+                    existing = db.get_custom_acts()
+                    builtin = {c for c, _ in DISCIPLINE_ACTIVITIES.get(disc, [])}
+                    dup = (code.upper() in builtin or any(
+                        c["code"].upper() == code.upper() and c["discipline"] == disc
+                        for c in existing))
+                    if dup:
+                        st.error(f"❌ {code.upper()} already exists for {disc}")
+                    else:
+                        try:
+                            db.add_custom_act(code, desc, disc, cat.split(".")[0])
+                            st.success(f"✅ {code.upper()} added")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
 
     custom_acts = db.get_custom_acts()
-    if sel_disc == "All":
-        custom_filter = custom_acts
-    else:
-        custom_filter = [c for c in custom_acts if c.get("discipline") == sel_disc]
 
-    for c in custom_filter:
-        rows.append({"Code": c["code"], "Description": c["description"],
-                     "Discipline": c["discipline"], "Type": "Custom"})
+    rows = []
+    disc_list = all_disciplines if sel_disc == "All" else [sel_disc]
+    for disc in disc_list:
+        for code, desc in DISCIPLINE_ACTIVITIES.get(disc, []):
+            rows.append({"Code": code, "Description": desc, "Discipline": disc,
+                         "Category": category_label(get_act_category(code, disc)),
+                         "Type": "Built-in"})
+    for c in custom_acts:
+        if sel_disc == "All" or c.get("discipline") == sel_disc:
+            rows.append({"Code": c["code"], "Description": c["description"],
+                         "Discipline": c["discipline"],
+                         "Category": category_label(c.get("category") or "8"),
+                         "Type": "Custom"})
 
     if rows:
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.info("No activity codes for this discipline")
+
+    # ── Edit / delete custom codes ──
+    custom_filter = [c for c in custom_acts
+                     if sel_disc == "All" or c.get("discipline") == sel_disc]
+    if custom_filter:
+        st.markdown("##### ✏️ Edit / delete custom code")
+        st.caption("Built-in codes are fixed in the app; only custom codes can be edited here.")
+        options = ["—"] + [f"{c['discipline']} · {c['code']} — {c['description']} (ID:{c['id']})"
+                           for c in sorted(custom_filter,
+                                           key=lambda x: (x["discipline"], x["code"]))]
+        sel = st.selectbox("Select custom code", options, key="edit_act_sel")
+        if sel != "—":
+            act_id = int(sel.split("ID:")[1].rstrip(")"))
+            act = next(c for c in custom_filter if c["id"] == act_id)
+            cur_cat = str(act.get("category") or "8")
+            with st.form("edit_act"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    new_code = st.text_input("Code", value=act["code"])
+                    new_disc = st.selectbox("Discipline", all_disciplines,
+                                            index=all_disciplines.index(act["discipline"])
+                                            if act["discipline"] in all_disciplines else 0)
+                with col2:
+                    new_desc = st.text_input("Description", value=act["description"])
+                    cat_idx = list(ACTIVITY_CATEGORIES.keys()).index(cur_cat) \
+                        if cur_cat in ACTIVITY_CATEGORIES else 7
+                    new_cat = st.selectbox("Productivity category", CATEGORY_OPTIONS,
+                                           index=cat_idx)
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.form_submit_button("💾 Update", type="primary"):
+                        try:
+                            db.update_custom_act(act_id, code=new_code, description=new_desc,
+                                                 discipline=new_disc,
+                                                 category=new_cat.split(".")[0])
+                            st.success(f"✅ {new_code.upper()} updated")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+                with c2:
+                    if st.form_submit_button("🗑 Delete this code"):
+                        try:
+                            db.delete_custom_act(act_id)
+                            st.success("Deleted")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+            st.caption("⚠️ Editing the code itself does not change hours already booked "
+                       "against the old code — rename only if no entries use it yet.")
+
+
+def show_bulk_upload_codes():
+    """Bulk upload custom activity codes + categories from the mapping Excel."""
+    st.markdown("##### 📤 Bulk Upload Activity Codes")
+    st.caption("Upload the 'GCC Activity Code Category Mapping' Excel. Custom codes are "
+               "added or updated (matched on Code + Discipline). Built-in rows are "
+               "ignored — their categories are fixed in the app.")
+
+    f = st.file_uploader("Excel file (.xlsx)", type=["xlsx"], key="bulk_act_upload")
+    if not f:
+        return
+
+    try:
+        df = pd.read_excel(f, sheet_name=0, dtype=str).fillna("")
+    except Exception as e:
+        st.error(f"Could not read file: {e}")
+        return
+
+    needed = {"Code", "Description", "Discipline", "Type"}
+    if not needed.issubset(df.columns):
+        st.error(f"Missing columns. Expected at least: {', '.join(sorted(needed))}")
+        return
+    cat_col = next((c for c in df.columns if "categor" in c.lower()), None)
+    if not cat_col:
+        st.error("No category column found (e.g. 'Proposed Category').")
+        return
+
+    all_disciplines = sorted(set(d for discs in DEPT_DISCIPLINES.values() for d in discs))
+    rows, problems = [], []
+    seen = set()
+    for i, r in df.iterrows():
+        code = str(r["Code"]).strip().upper()
+        disc = str(r["Discipline"]).strip()
+        typ = str(r["Type"]).strip().lower()
+        desc = str(r["Description"]).strip()
+        cat = str(r[cat_col]).strip().split(".")[0]
+        if not code or code == "OTHERS" or "built" in typ:
+            continue
+        if disc not in all_disciplines:
+            problems.append(f"Row {i+2}: unknown discipline '{disc}' ({code})")
+            continue
+        if cat not in ACTIVITY_CATEGORIES:
+            problems.append(f"Row {i+2}: invalid category '{r[cat_col]}' ({code})")
+            continue
+        builtin = {c for c, _ in DISCIPLINE_ACTIVITIES.get(disc, [])}
+        if code in builtin:
+            problems.append(f"Row {i+2}: {code} duplicates a built-in code in {disc} — "
+                            "re-code it (skipped)")
+            continue
+        if (code, disc) in seen:
+            problems.append(f"Row {i+2}: {code} appears twice for {disc} (second skipped)")
+            continue
+        seen.add((code, disc))
+        rows.append({"code": code, "description": desc, "discipline": disc, "category": cat})
+
+    existing = {(c["code"].upper(), c["discipline"]) for c in db.get_custom_acts()}
+    n_new = sum(1 for r in rows if (r["code"], r["discipline"]) not in existing)
+    n_upd = len(rows) - n_new
+
+    st.info(f"Ready: **{n_new} new** codes, **{n_upd} updates** to existing custom codes.")
+    if problems:
+        with st.expander(f"⚠️ {len(problems)} rows skipped — review", expanded=True):
+            for p in problems:
+                st.write("• " + p)
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        if st.button("✅ Apply upload", type="primary", key="apply_bulk_acts"):
+            try:
+                added, updated = db.bulk_upsert_custom_acts(rows)
+                st.success(f"Done — {added} added, {updated} updated.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed: {e}")
 
 
 def show_project_codes():
