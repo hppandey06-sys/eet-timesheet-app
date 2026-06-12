@@ -738,6 +738,43 @@ def render_prep_tab(meeting, user):
         ))
         # Use selectbox with admin's choice
         inputs = load_inputs_for_meeting(meeting['id'])
+
+        # ── Readiness grid (admins only) ──
+        with st.expander("📋 Input readiness — all disciplines", expanded=False):
+            SECTION_COLS = [('achievements', 'Achv'), ('concerns', 'Concern'),
+                            ('support_required', 'Support'), ('others_text', 'Others'),
+                            ('future_projection', 'Future'), ('training', 'Training')]
+            in_lookup = {i['discipline']: i for i in inputs}
+            lead_lookup = {m.get('leads_discipline'): m['name'] for m in members
+                           if m.get('is_discipline_lead') and m.get('leads_discipline')}
+            grid, pending = [], []
+            for d in all_disciplines:
+                rec = in_lookup.get(d, {})
+                row = {'Discipline': d, 'Lead': lead_lookup.get(d, '—')}
+                filled = 0
+                for col, label in SECTION_COLS:
+                    v = rec.get(col)
+                    ok = bool(v if not isinstance(v, list) else len(v))
+                    row[label] = '✅' if ok else '—'
+                    filled += ok
+                row['Status'] = rec.get('status', 'pending')
+                grid.append(row)
+                if rec.get('status') != 'SUBMITTED':
+                    pending.append(f"{lead_lookup.get(d, d)} ({d})")
+            st.dataframe(pd.DataFrame(grid), use_container_width=True, hide_index=True)
+            if pending:
+                closes = (meeting.get('prep_closes_at') or 'the cut-off')[:10]
+                st.markdown("**📨 Reminder for pending leads** (copy icon top-right of box):")
+                st.code(
+                    f"Dear Discipline Leads,\n\n"
+                    f"A gentle reminder to complete your PREP inputs for MER Meeting "
+                    f"#{meeting['meeting_no']:02d} (review of {meeting['review_month']}) "
+                    f"in the GCC Timesheet app before {closes}.\n\n"
+                    f"Pending: {', '.join(pending)}\n\n"
+                    f"Sections: Achievements · Areas of concern · Support required · "
+                    f"Others · Future projection · Training sessions.\n\nThanks,\nHP",
+                    language=None)
+
         submitted_lookup = {i['discipline']: i.get('status', 'DRAFT') for i in inputs}
         disc_labels = [f"{d} ({submitted_lookup.get(d, 'pending')})" for d in all_disciplines]
         pick = st.selectbox(
@@ -860,89 +897,111 @@ def render_prep_tab(meeting, user):
 
     # Form
     with st.form(key=f"prep_form_{active_disc}_{meeting['id']}"):
-        key_activities = st.text_area(
-            "Key activities completed this month",
-            value=(existing or {}).get('key_activities', '') or '',
-            height=100,
-            placeholder="• Bullet what your discipline delivered this month\n• Be specific: drawing names, decisions, milestones",
+        achievements = st.text_area(
+            "🏆 Achievements",
+            value=(existing or {}).get('achievements', '') or '',
+            height=90,
+            placeholder="Milestones met, deliverables issued, appreciation received\nOne point per line",
             disabled=not can_edit,
         )
 
         concerns = st.text_area(
-            "Concerns / blockers",
+            "⚠️ Areas of concern",
             value=(existing or {}).get('concerns', '') or '',
-            height=80,
-            placeholder="Issues that need leadership attention",
+            height=90,
+            placeholder="Risks, delays, resource gaps, interface issues — one per line",
             disabled=not can_edit,
         )
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            manpower = st.text_area(
-                "Manpower / resource issues",
-                value=(existing or {}).get('manpower_issues', '') or '',
+        support_required = st.text_area(
+            "🛟 Areas of improvement — support required",
+            value=(existing or {}).get('support_required', '') or '',
+            height=90,
+            placeholder="What the discipline needs: training, tools, manpower, decisions",
+            disabled=not can_edit,
+        )
+
+        others_text = st.text_area(
+            "📌 Others",
+            value=(existing or {}).get('others_text', '') or '',
+            height=80,
+            placeholder="Anything not covered above — misc activities, initiatives",
+            disabled=not can_edit,
+        )
+
+        future_projection = st.text_area(
+            "🔭 Future projection (next-month outlook)",
+            value=(existing or {}).get('future_projection', '') or '',
+            height=80,
+            placeholder="What your discipline expects to deliver / start next month",
+            disabled=not can_edit,
+        )
+
+        # Training table
+        training_default = ''
+        if existing and existing.get('training'):
+            tr = existing['training']
+            if isinstance(tr, list):
+                training_default = '\n'.join(
+                    f"{t.get('training','')} | {t.get('participants','')} | {t.get('status','')}"
+                    for t in tr)
+            elif isinstance(tr, str):
+                training_default = tr
+        training_text = st.text_area(
+            "🎓 Software / training sessions (one per line: Training | Participants | Status)",
+            value=training_default,
+            height=80,
+            placeholder="Navisworks basics | 14 | Conducted\nETAP refresher | 8 | Under progress",
+            disabled=not can_edit,
+            help="Status: Conducted / Under progress / Planned",
+        )
+
+        with st.expander("More: project status · critical items · proposed actions"):
+            critical = st.text_area(
+                "Critical concerns & decisions needed",
+                value=(existing or {}).get('critical_items', '') or '',
                 height=80,
-                placeholder="Headcount, training gaps, allocation issues",
+                placeholder="What needs Sangeeta's review / sign-off",
                 disabled=not can_edit,
             )
-        with col_b:
-            software = st.text_area(
-                "Software / training needs",
-                value=(existing or {}).get('software_needs', '') or '',
-                height=80,
-                placeholder="License renewals, training nominations",
+
+            proj_status_default = ''
+            if existing and existing.get('project_status'):
+                ps = existing['project_status']
+                if isinstance(ps, list):
+                    proj_status_default = '\n'.join(
+                        f"{p.get('project','')} | {p.get('phase','')} | {p.get('pct','')}% | {p.get('status','')}"
+                        for p in ps
+                    )
+                elif isinstance(ps, str):
+                    proj_status_default = ps
+
+            project_status_text = st.text_area(
+                "Project status (one per line: Project | Phase | % | Status)",
+                value=proj_status_default,
+                height=100,
+                placeholder="HPP1 | FEED+ | 85% | GAP done, awaiting FID",
                 disabled=not can_edit,
             )
 
-        critical = st.text_area(
-            "Critical concerns & decisions needed",
-            value=(existing or {}).get('critical_items', '') or '',
-            height=80,
-            placeholder="What needs Sangeeta's review / sign-off",
-            disabled=not can_edit,
-        )
+            actions_default = ''
+            if existing and existing.get('proposed_actions'):
+                pa = existing['proposed_actions']
+                if isinstance(pa, list):
+                    actions_default = '\n'.join(
+                        f"{a.get('text','')} | {a.get('owner','')} | {a.get('due','')}"
+                        for a in pa
+                    )
+                elif isinstance(pa, str):
+                    actions_default = pa
 
-        # Project status — JSON-stored, displayed as text for now
-        proj_status_default = ''
-        if existing and existing.get('project_status'):
-            ps = existing['project_status']
-            if isinstance(ps, list):
-                proj_status_default = '\n'.join(
-                    f"{p.get('project','')} | {p.get('phase','')} | {p.get('pct','')}% | {p.get('status','')}"
-                    for p in ps
-                )
-            elif isinstance(ps, str):
-                proj_status_default = ps
-
-        project_status_text = st.text_area(
-            "Project status (one per line: Project | Phase | % | Status)",
-            value=proj_status_default,
-            height=120,
-            placeholder="HPP1 | FEED+ | 85% | GAP done, awaiting FID\nCHP Ph1A | FEED Verif | 70% | DM plant TBE ongoing\n...",
-            disabled=not can_edit,
-            help="Format: 'Project name | Phase | Percent complete | Status/concerns'",
-        )
-
-        # Proposed actions
-        actions_default = ''
-        if existing and existing.get('proposed_actions'):
-            pa = existing['proposed_actions']
-            if isinstance(pa, list):
-                actions_default = '\n'.join(
-                    f"{a.get('text','')} | {a.get('owner','')} | {a.get('due','')}"
-                    for a in pa
-                )
-            elif isinstance(pa, str):
-                actions_default = pa
-
-        actions_text = st.text_area(
-            "Proposed action items (one per line: Action | Owner | Due date)",
-            value=actions_default,
-            height=100,
-            placeholder="SAF Worley bid decision | HP | 30-Jun-2026\nHTRI training nomination | HP | 15-Jul-2026",
-            disabled=not can_edit,
-            help="Format: 'Action description | Owner name | Due date'",
-        )
+            actions_text = st.text_area(
+                "Proposed action items (one per line: Action | Owner | Due date)",
+                value=actions_default,
+                height=80,
+                placeholder="SAF Worley bid decision | HP | 30-Jun-2026",
+                disabled=not can_edit,
+            )
 
         # Submit buttons
         col1, col2, col3 = st.columns([1, 1, 3])
@@ -989,15 +1048,27 @@ def render_prep_tab(meeting, user):
                 except Exception:
                     pass
 
+            training_list = []
+            for line in training_text.strip().split('\n'):
+                parts = [p.strip() for p in line.split('|')]
+                if parts and parts[0]:
+                    training_list.append({
+                        'training': parts[0],
+                        'participants': parts[1] if len(parts) > 1 else '',
+                        'status': parts[2] if len(parts) > 2 else '',
+                    })
+
             payload = {
                 'meeting_id': meeting['id'],
                 'discipline': active_disc,
                 'submitted_by': user['id'],
-                'key_activities': key_activities,
+                'achievements': achievements,
+                'support_required': support_required,
+                'others_text': others_text,
+                'future_projection': future_projection,
+                'training': training_list,
                 'project_status': proj_status_list,
                 'concerns': concerns,
-                'manpower_issues': manpower,
-                'software_needs': software,
                 'critical_items': critical,
                 'proposed_actions': actions_list,
                 'status': new_status,
@@ -1201,7 +1272,11 @@ def render_report_tab(meeting, user):
     decisions_list = load_decisions(meeting['id'])
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Disciplines submitted", f"{len([i for i in inputs if i.get('status') == 'SUBMITTED'])}")
+    n_lead_discs = len({m.get('leads_discipline') for m in db.get_members()
+                        if m.get('is_discipline_lead') and m.get('leads_discipline')})
+    n_sub = len([i for i in inputs if i.get('status') == 'SUBMITTED'])
+    col1.metric("Disciplines submitted", f"{n_sub} / {n_lead_discs}",
+                delta_color="inverse" if n_sub < n_lead_discs else "normal")
     col2.metric("Open actions", len(actions))
     col3.metric("Decisions captured", len(decisions_list))
     col4.metric("Status", meeting['status'])

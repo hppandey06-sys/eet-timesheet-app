@@ -18,6 +18,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 import db
+from constants import ACTIVITY_CATEGORIES, BUILTIN_ACT_CATEGORIES
 
 
 NAVY = RGBColor(0x1F, 0x4E, 0x78)
@@ -152,6 +153,51 @@ def _narrative(meeting, key, default=None):
     return default
 
 
+
+def _input_points(inputs, field):
+    """[(discipline, text)] for non-empty input fields, split into lines."""
+    out = []
+    for i in inputs:
+        v = (i.get(field) or '').strip() if not isinstance(i.get(field), list) else i.get(field)
+        if not v:
+            continue
+        if isinstance(v, str):
+            lines = [l.strip() for l in v.split('\n') if l.strip()]
+        else:
+            lines = v
+        if lines:
+            out.append((i.get('discipline', '?'), lines))
+    return out
+
+
+def _disc_bullets(doc, grouped):
+    for disc, lines in grouped:
+        p = doc.add_paragraph()
+        _run(p, disc, size=10, bold=True, color=NAVY)
+        for l in lines:
+            _bullet(doc, l)
+
+
+def _classify_code(code, code_cat_lookup):
+    a = str(code or '').strip().upper()
+    if not a or 'LEAVE' in a or a == 'HOL' or 'HOLIDAY' in a:
+        return '8'
+    return code_cat_lookup.get(a, '8')
+
+
+def _build_code_cat_lookup():
+    lookup = {}
+    for disc, codes in BUILTIN_ACT_CATEGORIES.items():
+        for code, cat in codes.items():
+            lookup[code.upper()] = str(cat)
+    try:
+        for c in db.get_custom_acts():
+            lookup[(c.get('code') or '').upper()] = str(c.get('category') or '8')
+    except Exception:
+        pass
+    return lookup
+
+
 # ── Cover ──
 def _build_cover(doc, meeting):
     year, month = map(int, meeting['review_month'].split('-'))
@@ -233,13 +279,21 @@ def _build_project_status(doc, meeting, entries_df, num):
         _data_cell(row.cells[2], f"{hrs:.0f}", align='right', fill=fill)
 
 
-def _build_misc(doc, meeting, num):
-    items = _narrative(meeting, 'misc_activities')
-    if not items:
+def _build_misc(doc, meeting, inputs, num):
+    items = _narrative(meeting, 'misc_activities') or []
+    ach = _input_points(inputs, 'achievements')
+    oth = _input_points(inputs, 'others_text')
+    if not items and not ach and not oth:
         return False
     _h1(doc, f"{num}. Miscellaneous Activities")
     for it in items:
         _bullet(doc, it)
+    if ach:
+        _para(doc, "Achievements:", bold=True)
+        _disc_bullets(doc, ach)
+    if oth:
+        _para(doc, "Other activities:", bold=True)
+        _disc_bullets(doc, oth)
     return True
 
 
@@ -261,13 +315,15 @@ def _build_coordination(doc, meeting, inputs, num):
     return True
 
 
-def _build_future(doc, meeting, num):
-    points = _narrative(meeting, 'future_projection')
-    if not points:
+def _build_future(doc, meeting, inputs, num):
+    points = _narrative(meeting, 'future_projection') or []
+    fut = _input_points(inputs, 'future_projection')
+    if not points and not fut:
         return False
     _h1(doc, f"{num}. Future Projection of Projects Status")
     for p in points:
         _bullet(doc, p)
+    _disc_bullets(doc, fut)
     return True
 
 
@@ -327,6 +383,30 @@ def _build_manhours(doc, meeting, entries_df, members, num):
                align='center', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
     _data_cell(total_row.cells[2], f"{grand_total:.0f}", align='right', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
     _data_cell(total_row.cells[3], "100%", align='right', bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+
+
+
+    # ── Productivity category split (8 segments) ──
+    lookup = _build_code_cat_lookup()
+    df_cat = df_eng.copy()
+    df_cat['cat'] = df_cat['act'].map(lambda a: _classify_code(a, lookup))
+    cat_tot = df_cat.groupby('cat')['hrs'].sum()
+    tot = df_cat['hrs'].sum()
+    if tot > 0:
+        _para(doc)
+        _para(doc, "Productivity category split (GCC total):", bold=True)
+        ctable = doc.add_table(rows=9, cols=3)
+        for i, h in enumerate(['Category', 'Hours', '%']):
+            _header_cell(ctable.rows[0].cells[i], h)
+        for idx, (cno, (cname, cdi)) in enumerate(ACTIVITY_CATEGORIES.items(), 1):
+            v = float(cat_tot.get(cno, 0))
+            fill = ROW_ALT if idx % 2 == 0 else None
+            _data_cell(ctable.rows[idx].cells[0], f"{cno}. {cname}", fill=fill)
+            _data_cell(ctable.rows[idx].cells[1], f"{v:,.0f}", align='center', fill=fill)
+            _data_cell(ctable.rows[idx].cells[2], f"{v/tot*100:.0f}%", align='center', fill=fill)
+        direct = sum(float(cat_tot.get(c, 0)) for c in ['1', '2', '3', '4', '5'])
+        _para(doc, f"Direct (categories 1\u20135): {direct/tot*100:.0f}%  \u00b7  "
+                   f"Indirect (6\u20138): {100-direct/tot*100:.0f}%", italic=True, color=GREY)
 
 
 def _build_strength(doc, members, num):
@@ -429,19 +509,36 @@ def _build_critical(doc, meeting, inputs, num):
     return True
 
 
-def _build_suggestions(doc, meeting, num):
-    points = _narrative(meeting, 'suggestions')
-    if not points:
+def _build_suggestions(doc, meeting, inputs, num):
+    points = _narrative(meeting, 'suggestions') or []
+    supp = _input_points(inputs, 'support_required')
+    if not points and not supp:
         return False
     _h1(doc, f"{num}. Suggestions")
     for p in points:
         _bullet(doc, p)
+    if supp:
+        _para(doc, "Support required by disciplines:", bold=True)
+        _disc_bullets(doc, supp)
     return True
 
 
-def _build_software_training(doc, meeting, num):
+def _build_software_training(doc, meeting, inputs, num):
     st = _narrative(meeting, 'software_training')
-    if not st or not isinstance(st, dict):
+    if not isinstance(st, dict):
+        st = {}
+    lead_rows = []
+    for i in inputs:
+        tr = i.get('training')
+        if isinstance(tr, list):
+            for t in tr:
+                if t.get('training'):
+                    lead_rows.append({
+                        'training': f"{i.get('discipline','?')}: {t['training']}",
+                        'participants': t.get('participants', ''),
+                        'status': t.get('status', ''),
+                    })
+    if not st and not lead_rows:
         return False
     _h1(doc, f"{num}. Software Training Sessions")
 
@@ -449,7 +546,7 @@ def _build_software_training(doc, meeting, num):
         for n in st['narrative_points']:
             _bullet(doc, n)
 
-    tt = st.get('training_table')
+    tt = (st.get('training_table') or []) + lead_rows
     if tt:
         _para(doc)
         _para(doc, "Training Status:", bold=True)
@@ -551,15 +648,15 @@ def generate_report(meeting_id):
 
     n = 1
     _build_project_status(doc, meeting, df, n); n += 1
-    if _build_misc(doc, meeting, n): n += 1
+    if _build_misc(doc, meeting, inputs, n): n += 1
     if _build_coordination(doc, meeting, inputs, n): n += 1
-    if _build_future(doc, meeting, n): n += 1
+    if _build_future(doc, meeting, inputs, n): n += 1
     _build_manhours(doc, meeting, df, members, n); n += 1
     _build_strength(doc, members, n); n += 1
     if _build_assurance(doc, meeting, n): n += 1
     if _build_critical(doc, meeting, inputs, n): n += 1
-    if _build_suggestions(doc, meeting, n): n += 1
-    if _build_software_training(doc, meeting, n): n += 1
+    if _build_suggestions(doc, meeting, inputs, n): n += 1
+    if _build_software_training(doc, meeting, inputs, n): n += 1
     if _build_quality(doc, meeting, n): n += 1
     if _build_actions(doc, actions, n): n += 1
 
