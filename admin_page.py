@@ -82,12 +82,13 @@ def show_members_tab():
         return
 
     df = pd.DataFrame(members)
-    cols_to_show = ["id", "name", "email", "company", "dept", "discipline", "role"]
+    cols_to_show = ["id", "name", "email", "company", "dept", "discipline", "role", "leads_discipline"]
     cols_present = [c for c in cols_to_show if c in df.columns]
     df = df[cols_present].copy()
     rename_map = {"id": "ID", "name": "Name", "email": "Email",
                   "company": "Company", "dept": "Department",
-                  "discipline": "Discipline", "role": "Role"}
+                  "discipline": "Discipline", "role": "Role",
+                  "leads_discipline": "Leads"}
     df.columns = [rename_map.get(c, c) for c in df.columns]
     st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -136,6 +137,24 @@ def show_members_tab():
                 with col4:
                     new_pw = st.text_input("Reset Password (leave blank to keep)", placeholder="(unchanged)")
 
+                # ── Discipline lead assignment ──
+                all_disciplines = sorted(set(
+                    d for ds in DEPT_DISCIPLINES.values() for d in ds))
+                col5, col6 = st.columns(2)
+                with col5:
+                    new_is_lead = st.checkbox(
+                        "Discipline Lead (PREP inputs + MER access)",
+                        value=bool(member.get("is_discipline_lead")))
+                with col6:
+                    cur_lead_disc = member.get("leads_discipline") or member.get("discipline")
+                    if cur_lead_disc not in all_disciplines:
+                        cur_lead_disc = all_disciplines[0]
+                    new_lead_disc = st.selectbox(
+                        "Leads discipline", all_disciplines,
+                        index=all_disciplines.index(cur_lead_disc),
+                        help="Which discipline this person leads — usually their own. "
+                             "Only applies if the Lead box is ticked.")
+
                 col_save, col_del = st.columns(2)
                 with col_save:
                     save = st.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
@@ -145,7 +164,9 @@ def show_members_tab():
                 if save:
                     fields = {"name": new_name, "email": new_email,
                               "company": new_company, "dept": new_dept,
-                              "discipline": new_disc, "role": new_role}
+                              "discipline": new_disc, "role": new_role,
+                              "is_discipline_lead": new_is_lead,
+                              "leads_discipline": new_lead_disc if new_is_lead else None}
                     if new_pw.strip():
                         fields["password"] = new_pw.strip()
                     db.update_member(member_id, **fields)
