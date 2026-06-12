@@ -284,13 +284,26 @@ def get_holiday_name(date_str):
 
 
 def get_activities_for_discipline(discipline, custom_acts=None):
-    """Get all activities (built-in + custom) for a discipline."""
-    builtin = DISCIPLINE_ACTIVITIES.get(discipline, [("OTHERS", "Others")])
+    """Get all activities for a discipline.
+
+    After the Delivery 4A2 migration, ALL codes live in the ts_custom_acts
+    table (passed in as custom_acts) and are fully editable in the admin
+    panel. DISCIPLINE_ACTIVITIES above is retained as SEED/FALLBACK data
+    only — used if the database has no codes for a discipline, so time
+    booking can never break.
+
+    OTHERS is always appended if not present.
+    """
+    result = []
     if custom_acts:
-        custom_for_disc = [(c["code"], c["description"])
-                           for c in custom_acts if c.get("discipline") == discipline]
-        return builtin + custom_for_disc
-    return builtin
+        result = [(c["code"], c["description"])
+                  for c in custom_acts if c.get("discipline") == discipline]
+    if not result:
+        result = [(c, d) for c, d in DISCIPLINE_ACTIVITIES.get(discipline, [])
+                  if c != "OTHERS"]
+    if "OTHERS" not in [c for c, _ in result]:
+        result.append(("OTHERS", "Others"))
+    return result
 
 
 def get_all_disciplines():
