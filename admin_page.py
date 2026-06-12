@@ -140,20 +140,21 @@ def show_members_tab():
                 # ── Discipline lead assignment ──
                 all_disciplines = sorted(set(
                     d for ds in DEPT_DISCIPLINES.values() for d in ds))
+                lead_options = ["— None —"] + all_disciplines
                 col5, col6 = st.columns(2)
                 with col5:
                     new_is_lead = st.checkbox(
                         "Discipline Lead (PREP inputs + MER access)",
                         value=bool(member.get("is_discipline_lead")))
                 with col6:
-                    cur_lead_disc = member.get("leads_discipline") or member.get("discipline")
-                    if cur_lead_disc not in all_disciplines:
-                        cur_lead_disc = all_disciplines[0]
+                    cur_lead_disc = member.get("leads_discipline") or "— None —"
+                    if cur_lead_disc not in lead_options:
+                        cur_lead_disc = "— None —"
                     new_lead_disc = st.selectbox(
-                        "Leads discipline", all_disciplines,
-                        index=all_disciplines.index(cur_lead_disc),
-                        help="Which discipline this person leads — usually their own. "
-                             "Only applies if the Lead box is ticked.")
+                        "Leads discipline", lead_options,
+                        index=lead_options.index(cur_lead_disc),
+                        help="Pick '— None —' (or untick the Lead box) to remove "
+                             "a lead assignment.")
 
                 col_save, col_del = st.columns(2)
                 with col_save:
@@ -162,11 +163,12 @@ def show_members_tab():
                     delete = st.form_submit_button("🗑 Delete Member", use_container_width=True)
 
                 if save:
+                    is_lead = new_is_lead and new_lead_disc != "— None —"
                     fields = {"name": new_name, "email": new_email,
                               "company": new_company, "dept": new_dept,
                               "discipline": new_disc, "role": new_role,
-                              "is_discipline_lead": new_is_lead,
-                              "leads_discipline": new_lead_disc if new_is_lead else None}
+                              "is_discipline_lead": is_lead,
+                              "leads_discipline": new_lead_disc if is_lead else None}
                     if new_pw.strip():
                         fields["password"] = new_pw.strip()
                     db.update_member(member_id, **fields)
