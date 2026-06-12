@@ -27,6 +27,7 @@ import json
 import re
 
 import db
+from constants import ACTIVITY_CATEGORIES, BUILTIN_ACT_CATEGORIES, category_label
 
 
 # ════════════════════════════════════════════════════
@@ -34,24 +35,28 @@ import db
 # ════════════════════════════════════════════════════
 
 CAT_COLORS = {
-    'DESIGN':  '#0F6E56',
-    'REVIEW':  '#185FA5',
-    'COORD':   '#7F77DD',
-    'DOC':     '#BA7517',
-    'ADMIN':   '#888880',
-    'LEAVE':   '#5DCAA5',
-    'UNCLASS': '#A32D2D',
+    '1': '#534AB7',  # Production of deliverables
+    '2': '#0F6E56',  # Checking & review
+    '3': '#185FA5',  # Studies & analysis
+    '4': '#D85A30',  # Meetings & coordination
+    '5': '#BA7517',  # Site & construction support
+    '6': '#993556',  # Engg. standards & QMS
+    '7': '#3B6D11',  # Training & development
+    '8': '#888880',  # Admin, leave & others
 }
-CAT_ORDER = ['DESIGN', 'REVIEW', 'COORD', 'DOC', 'ADMIN', 'LEAVE', 'UNCLASS']
+CAT_ORDER = ['1', '2', '3', '4', '5', '6', '7', '8']
 CAT_LABEL = {
-    'DESIGN': 'Design',
-    'REVIEW': 'Review',
-    'COORD': 'Coordination',
-    'DOC': 'Documentation',
-    'ADMIN': 'Admin',
-    'LEAVE': 'Leave',
-    'UNCLASS': '⚠ Unclassified',
+    '1': 'Production',
+    '2': 'Review',
+    '3': 'Studies',
+    '4': 'Coordination',
+    '5': 'Site support',
+    '6': 'Standards/QMS',
+    '7': 'Training',
+    '8': 'Others/Admin',
 }
+DIRECT_CATS = ['1', '2', '3', '4', '5']
+INDIRECT_CATS = ['6', '7', '8']
 
 STATE_LABEL = {
     'DRAFT': '📋 Draft',
@@ -69,82 +74,38 @@ STATE_LABEL = {
 # Reused from productivity dashboard design.
 # ════════════════════════════════════════════════════
 
+@st.cache_data(ttl=60)
+def get_code_category_lookup():
+    """code (upper) -> category number '1'..'8'.
+
+    Built from the ts_custom_acts table (all codes live there since
+    Delivery 4A2) with the constants.py seed mapping as fallback.
+    Codes are discipline-prefixed, so a flat lookup is safe.
+    """
+    lookup = {}
+    for disc, codes in BUILTIN_ACT_CATEGORIES.items():
+        for code, cat in codes.items():
+            lookup[code.upper()] = str(cat)
+    try:
+        for c in db.get_custom_acts():
+            lookup[(c.get('code') or '').upper()] = str(c.get('category') or '8')
+    except Exception:
+        pass
+    return lookup
+
+
 def classify_activity(activity_str, description_str=""):
-    """Return one of: DESIGN, REVIEW, COORD, DOC, ADMIN, LEAVE, UNCLASS."""
-    a = str(activity_str or "").strip()
-    d = str(description_str or "").strip()
-    a_low = a.lower()
-    d_low = d.lower()
+    """Return productivity category '1'..'8' for a timesheet entry.
 
-    # Leave / Holiday
-    if 'leave' in a_low or a_low == 'hol' or 'holiday' in a_low:
-        return 'LEAVE'
-
-    # Admin (internal / low-value)
-    if any(k in a_low for k in ['tool box', 'idle', 'training', 'sap', 'self learning']):
-        return 'ADMIN'
-
-    # Try discipline-code patterns first
-    code_patterns = [
-        (r'^prs[-_]?0?[12]$', 'DESIGN'),
-        (r'^prs[-_]?0?[45]$', 'REVIEW'),
-        (r'^prs[-_]?0?[789]$', 'DESIGN'),
-        (r'^prs[-_]?1[01]$', 'COORD'),
-        (r'^civ[-_]?0?[1-4]$', 'DESIGN'),
-        (r'^civ[-_]?0?[5-7]$', 'REVIEW'),
-        (r'^civ[-_]?0?8$', 'COORD'),
-        (r'^civ[-_]?0?9$', 'DOC'),
-        (r'^civ[-_]?1[01]$', 'COORD'),
-        (r'^elec[-_]?0?[1-4]$', 'DESIGN'),
-        (r'^elec[-_]?0?[5-8]$', 'REVIEW'),
-        (r'^elec[-_]?0?9$', 'COORD'),
-        (r'^elec[-_]?1[01]$', 'DOC'),
-        (r'^inst[-_]?0?[1-3]$', 'DESIGN'),
-        (r'^inst[-_]?0?[4-5]$', 'REVIEW'),
-        (r'^mech[-_]?0?[1-3]$', 'DESIGN'),
-        (r'^mech[-_]?0?4$', 'REVIEW'),
-        (r'^mech[-_]?0?6$', 'COORD'),
-        (r'^mech[-_]?0?[7-9]$', 'DESIGN'),
-        (r'^mech[-_]?10$', 'REVIEW'),
-        (r'^mech[-_]?1[12]$', 'COORD'),
-        (r'^ms[-_]?0?[1-2]$', 'DESIGN'),
-        (r'^ms[-_]?0?[3-4]$', 'REVIEW'),
-        (r'^mr[-_]?0?[1-2]$', 'DESIGN'),
-        (r'^mr[-_]?0?3$', 'REVIEW'),
-        (r'^pip[-_]?0?[1-3]$', 'DESIGN'),
-        (r'^hse[-_]?0?\d$', 'REVIEW'),
-        (r'^doc[-_]?0?\d$', 'DOC'),
-    ]
-    for pat, cat in code_patterns:
-        if re.match(pat, a_low):
-            return cat
-
-    # Free-text activity name
-    if any(k in a_low for k in ['mto', '3d model', 'drawing', 'iso', 'isometric',
-                                  'layout', 'plot plan', 'sld', 'datasheet', 'spec',
-                                  'calc', 'p&id', 'load list', 'mds', 'pms', 'vds']):
-        return 'DESIGN'
-    if any(k in a_low for k in ['vendor', 'offer', 'rfq', 'tbe', 'quer', 'meeting',
-                                  'contractor', 'tq', 'discussion']):
-        return 'COORD'
-    if 'review' in a_low or 'check' in a_low or 'verif' in a_low:
-        return 'REVIEW'
-    if any(k in a_low for k in ['mdr', 'mom', 'minutes', 'report', 'planning']):
-        return 'DOC'
-
-    # OTHERS / blank — fall back to description text
-    if any(k in d_low for k in ['mto', 'drawing', 'iso', 'spec', 'datasheet',
-                                  'calc', 'p&id', 'layout', 'model', 'sld']):
-        return 'DESIGN'
-    if any(k in d_low for k in ['vendor', 'offer', 'rfq', 'tbe', 'quer',
-                                  'meeting', 'tq']):
-        return 'COORD'
-    if 'review' in d_low or 'check' in d_low or 'verif' in d_low:
-        return 'REVIEW'
-    if any(k in d_low for k in ['mdr', 'mom', 'report', 'minutes']):
-        return 'DOC'
-
-    return 'UNCLASS'
+    Uses the admin-maintained code→category mapping (8 segments).
+    Leave/holiday and unknown codes fall to '8' (Admin, leave & others).
+    """
+    a = str(activity_str or "").strip().upper()
+    if not a:
+        return '8'
+    if 'LEAVE' in a or a == 'HOL' or 'HOLIDAY' in a:
+        return '8'
+    return get_code_category_lookup().get(a, '8')
 
 
 # ════════════════════════════════════════════════════
@@ -413,19 +374,19 @@ def render_overview_tab(meeting, user):
         )
         n_projects = df_eng['proj'].nunique()
         cat_totals = df_eng.groupby('Category')['Hours'].sum()
-        hv = sum(cat_totals.get(c, 0) for c in ['DESIGN', 'REVIEW', 'COORD'])
+        hv = sum(cat_totals.get(c, 0) for c in DIRECT_CATS)
         hv_pct = hv / total_hrs * 100 if total_hrs else 0
-        unclass = cat_totals.get('UNCLASS', 0)
+        unclass = cat_totals.get('8', 0)
         unclass_pct = unclass / total_hrs * 100 if total_hrs else 0
-        leave_pct = cat_totals.get('LEAVE', 0) / total_hrs * 100 if total_hrs else 0
+        leave_pct = sum(cat_totals.get(c, 0) for c in INDIRECT_CATS) / total_hrs * 100 if total_hrs else 0
 
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("Total hours", f"{total_hrs:,.0f}")
         c2.metric("Reporting", f"{n_reporting} / {eng_members_total}")
         c3.metric("Projects", n_projects)
-        c4.metric("High-value", f"{hv_pct:.0f}%", help="Design + Review + Coord")
-        c5.metric("Unclassified", f"{unclass_pct:.0f}%", delta_color="inverse")
-        c6.metric("Leave", f"{leave_pct:.0f}%")
+        c4.metric("Direct %", f"{hv_pct:.0f}%", help="Categories 1-5: production, review, studies, coordination, site")
+        c5.metric("Others/Admin", f"{unclass_pct:.0f}%", delta_color="inverse")
+        c6.metric("Indirect %", f"{leave_pct:.0f}%", help="Categories 6-8: standards, training, admin/leave")
 
         # Category mix bar
         bar_html = '<div style="display:flex;height:18px;border-radius:4px;overflow:hidden;margin-top:10px;background:#eee;">'
@@ -571,7 +532,7 @@ def render_overview_tab(meeting, user):
                     'severity': 3,
                 })
                 continue
-            unclass_h = sub[sub['Category'] == 'UNCLASS']['Hours'].sum()
+            unclass_h = sub[sub['Category'] == '8']['Hours'].sum()
             unclass_pct = unclass_h / m_hrs * 100
             if unclass_pct > 50:
                 flags.append({
@@ -660,8 +621,92 @@ def render_overview_tab(meeting, user):
                 st.caption(f"(super admin list unavailable: {e})")
 
 # ════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════
 # PREP TAB
 # ════════════════════════════════════════════════════
+
+def _member_initials(members):
+    """Short-form tab labels from names, de-duplicated with digits."""
+    labels, seen = {}, {}
+    for m in members:
+        parts = [p for p in str(m.get('name', '')).split() if p]
+        ini = ''.join(p[0] for p in parts[:3]).upper() or f"ID{m['id']}"
+        if ini in seen:
+            seen[ini] += 1
+            ini = f"{ini}{seen[ini]}"
+        else:
+            seen[ini] = 1
+        labels[m['id']] = ini
+    return labels
+
+
+def _category_bars_html(cat_tot, total):
+    """Horizontal per-category bars (8 segments)."""
+    html = '<div style="font-size:12px;">'
+    for c in CAT_ORDER:
+        v = float(cat_tot.get(c, 0))
+        if v <= 0:
+            continue
+        pct = v / total * 100 if total else 0
+        html += (
+            f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0;">'
+            f'<div style="width:110px;">{CAT_LABEL[c]}</div>'
+            f'<div style="flex:1;background:#eee;border-radius:3px;height:13px;">'
+            f'<div style="width:{max(pct,1):.0f}%;background:{CAT_COLORS[c]};height:13px;'
+            f'border-radius:3px;"></div></div>'
+            f'<div style="width:78px;text-align:right;color:#666;">{v:.0f}h · {pct:.0f}%</div>'
+            f'</div>'
+        )
+    html += '</div>'
+    return html
+
+
+def render_member_productivity(df_disc, eng_members, disc_total_hrs):
+    """Team + per-member productivity tabs inside PREP (lead's own discipline)."""
+    st.markdown("##### 👥 Member productivity")
+    labels = _member_initials(eng_members)
+    members_sorted = sorted(eng_members, key=lambda m: m.get('name', ''))
+    tab_names = ["Team"] + [labels[m['id']] for m in members_sorted]
+    tabs = st.tabs(tab_names)
+
+    # Team tab — discipline category split
+    with tabs[0]:
+        cat_tot = df_disc.groupby('Category')['Hours'].sum()
+        st.markdown(_category_bars_html(cat_tot, disc_total_hrs),
+                    unsafe_allow_html=True)
+        direct = sum(cat_tot.get(c, 0) for c in DIRECT_CATS)
+        st.caption(f"Direct {direct/disc_total_hrs*100:.0f}% · "
+                   f"Indirect {100-direct/disc_total_hrs*100:.0f}% · "
+                   f"{len(eng_members)} members")
+
+    # Per-member tabs
+    for i, m in enumerate(members_sorted, start=1):
+        with tabs[i]:
+            sub = df_disc[df_disc['uid'] == m['id']]
+            m_hrs = sub['Hours'].sum() if len(sub) else 0
+            st.markdown(f"**{m.get('name','')}**")
+            if m_hrs == 0:
+                st.warning("No hours booked this month.")
+                continue
+            n_proj = sub['proj'].nunique()
+            top_g = sub.groupby('proj')['Hours'].sum().sort_values(ascending=False)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Hours", f"{m_hrs:,.0f}")
+            c2.metric("Projects", n_proj)
+            c3.metric("Top project", top_g.index[0] if len(top_g) else '-')
+            m_cat = sub.groupby('Category')['Hours'].sum()
+            m_direct = sum(m_cat.get(c, 0) for c in DIRECT_CATS)
+            c4.metric("Direct %", f"{m_direct/m_hrs*100:.0f}%")
+            st.markdown(_category_bars_html(m_cat, m_hrs), unsafe_allow_html=True)
+            with st.expander("Activity detail"):
+                det = (sub.groupby(['act', 'proj'])['Hours'].sum()
+                          .reset_index()
+                          .sort_values('Hours', ascending=False))
+                det.columns = ['Activity code', 'Project', 'Hours']
+                det['Category'] = det['Activity code'].map(
+                    lambda a: CAT_LABEL.get(classify_activity(a), 'Others/Admin'))
+                st.dataframe(det, use_container_width=True, hide_index=True)
+
 
 def render_prep_tab(meeting, user):
     """Discipline lead inputs for the meeting."""
@@ -731,7 +776,7 @@ def render_prep_tab(meeting, user):
             lambda r: classify_activity(r['act'], r['Description']), axis=1
         )
         cat_tot = df_disc.groupby('Category')['Hours'].sum()
-        hv = sum(cat_tot.get(c, 0) for c in ['DESIGN', 'REVIEW', 'COORD'])
+        hv = sum(cat_tot.get(c, 0) for c in DIRECT_CATS)
         hv_pct = hv / total_hrs * 100 if total_hrs else 0
     else:
         total_hrs = n_members = top_proj_hrs = 0
@@ -744,7 +789,7 @@ def render_prep_tab(meeting, user):
     c1.metric("Total hrs", f"{total_hrs:,.0f}")
     c2.metric("Members reporting", n_members)
     c3.metric("Top project", top_project, help=f"{top_proj_hrs:.0f} hrs")
-    c4.metric("High-value", f"{hv_pct:.0f}%")
+    c4.metric("Direct %", f"{hv_pct:.0f}%")
 
     # Category mix bar
     if total_hrs > 0:
@@ -761,6 +806,14 @@ def render_prep_tab(meeting, user):
         bar_html += '</div>'
         st.markdown(bar_html, unsafe_allow_html=True)
 
+    # ── Member productivity tabs (Team + per-member) ──
+    eng_members_disc = [m for m in members
+                        if m.get('discipline') == active_disc
+                        and m.get('dept') == 'Engineering'
+                        and not m.get('excluded_from_productivity')]
+    if len(df_disc) and eng_members_disc:
+        render_member_productivity(df_disc, eng_members_disc, total_hrs)
+
     # ── Data quality flags for this team ──
     eng_members = [m for m in members
                    if m.get('discipline') == active_disc
@@ -775,7 +828,7 @@ def render_prep_tab(meeting, user):
         if m_hrs == 0:
             flags.append(f"🔴 **{m['name']}** — 0 hrs filled")
             continue
-        unclass_h = sub[sub['Category'] == 'UNCLASS']['Hours'].sum() if len(sub) else 0
+        unclass_h = sub[sub['Category'] == '8']['Hours'].sum() if len(sub) else 0
         unclass_pct = unclass_h / m_hrs * 100 if m_hrs else 0
         if unclass_pct > 50:
             flags.append(f"🔴 **{m['name']}** — {unclass_pct:.0f}% on OTHERS")
@@ -1392,11 +1445,7 @@ def render_super_admin_panel(user):
 # OVERVIEW UPGRADE — 12 discipline tabs
 # ════════════════════════════════════════════════════
 
-CAT_COLORS_MAP = {
-    'DESIGN':  '#0F6E56', 'REVIEW':  '#185FA5', 'COORD':   '#7F77DD',
-    'DOC':     '#BA7517', 'ADMIN':   '#888880', 'LEAVE':   '#5DCAA5',
-    'UNCLASS': '#A32D2D',
-}
+CAT_COLORS_MAP = CAT_COLORS
 
 ACTIVITY_DESC_LOOKUP = {
     'PRS-01': 'PFD Preparation', 'PRS-02': 'P&ID Development',
@@ -1468,16 +1517,16 @@ def render_discipline_dashboard(disc_name, members, entries_df, meeting):
     top_proj = top_proj_g.index[0] if len(top_proj_g) else '-'
     
     cat_tot = df_d.groupby('Category')['hrs'].sum()
-    hv = sum(cat_tot.get(c, 0) for c in ['DESIGN', 'REVIEW', 'COORD'])
+    hv = sum(cat_tot.get(c, 0) for c in DIRECT_CATS)
     hv_pct = hv / total_hrs * 100 if total_hrs else 0
-    unclass = cat_tot.get('UNCLASS', 0)
+    unclass = cat_tot.get('8', 0)
     unclass_pct = unclass / total_hrs * 100 if total_hrs else 0
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Hours", f"{total_hrs:,.0f}")
     c2.metric("Members", n_members)
     c3.metric("Top Project", top_proj, help=f"{top_proj_g.iloc[0]:.0f} hrs" if len(top_proj_g) else "")
-    c4.metric("High-Value", f"{hv_pct:.0f}%", help="Design + Review + Coord")
+    c4.metric("Direct %", f"{hv_pct:.0f}%", help="Categories 1-5: production, review, studies, coordination, site")
     c5.metric("Visibility", f"{100-unclass_pct:.0f}%", help="100% - unclassified%",
               delta_color="normal" if (100 - unclass_pct) >= 70 else "inverse")
 
@@ -1533,7 +1582,7 @@ def render_discipline_dashboard(disc_name, members, entries_df, meeting):
         if m_hrs == 0:
             flag_rows.append({'Member': mem['name'], 'Issue': '🔴 0 hrs filled', 'Severity': 3})
             continue
-        unclass_h = sub[sub['Category'] == 'UNCLASS']['hrs'].sum()
+        unclass_h = sub[sub['Category'] == '8']['hrs'].sum()
         u_pct = unclass_h / m_hrs * 100
         if u_pct > 50:
             flag_rows.append({'Member': mem['name'], 'Issue': f'🔴 {u_pct:.0f}% on OTHERS', 'Severity': 3})
@@ -1548,13 +1597,13 @@ def render_discipline_dashboard(disc_name, members, entries_df, meeting):
 
     # ── Commentary ──
     profile_bits = []
-    design_pct = cat_tot.get('DESIGN', 0) / total_hrs * 100 if total_hrs else 0
-    review_pct = cat_tot.get('REVIEW', 0) / total_hrs * 100 if total_hrs else 0
-    coord_pct = cat_tot.get('COORD', 0) / total_hrs * 100 if total_hrs else 0
-    if design_pct > 40: profile_bits.append(f"design-heavy ({design_pct:.0f}%)")
+    design_pct = cat_tot.get('1', 0) / total_hrs * 100 if total_hrs else 0
+    review_pct = cat_tot.get('2', 0) / total_hrs * 100 if total_hrs else 0
+    coord_pct = cat_tot.get('4', 0) / total_hrs * 100 if total_hrs else 0
+    if design_pct > 40: profile_bits.append(f"production-heavy ({design_pct:.0f}%)")
     if review_pct > 30: profile_bits.append(f"review-heavy ({review_pct:.0f}%)")
     if coord_pct > 30: profile_bits.append(f"coordination-heavy ({coord_pct:.0f}%)")
-    if not profile_bits: profile_bits.append(f"balanced ({hv_pct:.0f}% high-value)")
+    if not profile_bits: profile_bits.append(f"balanced ({hv_pct:.0f}% direct)")
     
     commentary = ', '.join(profile_bits)
     if unclass_pct > 40:
@@ -1609,18 +1658,18 @@ def render_overview_tab_v2(meeting, user):
         lambda r: classify_activity(r['act'], r['description']), axis=1
     )
     cat_totals = df_eng.groupby('Category')['hrs'].sum()
-    hv_pct = sum(cat_totals.get(c, 0) for c in ['DESIGN', 'REVIEW', 'COORD']) / total_hrs * 100 if total_hrs else 0
-    unclass_pct = cat_totals.get('UNCLASS', 0) / total_hrs * 100 if total_hrs else 0
-    leave_pct = cat_totals.get('LEAVE', 0) / total_hrs * 100 if total_hrs else 0
+    hv_pct = sum(cat_totals.get(c, 0) for c in DIRECT_CATS) / total_hrs * 100 if total_hrs else 0
+    unclass_pct = cat_totals.get('8', 0) / total_hrs * 100 if total_hrs else 0
+    leave_pct = sum(cat_totals.get(c, 0) for c in INDIRECT_CATS) / total_hrs * 100 if total_hrs else 0
 
     st.markdown("### 📊 Team Summary")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Total hours", f"{total_hrs:,.0f}")
     c2.metric("Reporting", f"{n_reporting} / {eng_members_total}")
     c3.metric("Projects", n_projects)
-    c4.metric("High-value", f"{hv_pct:.0f}%")
-    c5.metric("Unclassified", f"{unclass_pct:.0f}%", delta_color="inverse")
-    c6.metric("Leave", f"{leave_pct:.0f}%")
+    c4.metric("Direct %", f"{hv_pct:.0f}%")
+    c5.metric("Others/Admin", f"{unclass_pct:.0f}%", delta_color="inverse")
+    c6.metric("Indirect %", f"{leave_pct:.0f}%", help="Categories 6-8: standards, training, admin/leave")
 
     st.markdown("---")
     st.markdown("### 🏢 Discipline-wise Dashboards")
